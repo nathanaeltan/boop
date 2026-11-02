@@ -168,16 +168,39 @@ function buildDark() {
     const y = rand(H); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y + rand(-40, 40)); g.stroke();
   }
 }
-// The mic is at the top edge, so the dark peels away downward from there: a soft-edged wave with dry-brush scratches along its front.
+// Where the mic is on the screen right now, and which way it faces from the middle of the page. An iPad has it on its top edge and an iPhone on its bottom edge, wherever those have turned to.
+function micSpot() {
+  const a = screenAngle() * Math.PI / 180, flip = /iPhone/.test(navigator.userAgent) ? -1 : 1;
+  const ux = -Math.sin(a) * flip, uy = -Math.cos(a) * flip;
+  return { x: W / 2 + ux * W / 2, y: H / 2 + uy * H / 2, ux, uy };
+}
+// Three chalk marks pointing at the mic, so children know where to aim. `gap` is how far from the edge they stop.
+function drawMicHint(color, alpha, gap = 0) {
+  if (alpha <= 0) return;
+  const m = micSpot(), size = U * .026, sideX = -m.uy, sideY = m.ux, bob = Math.sin(pageT * 4) * U * .008;
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = U * .007; ctx.lineCap = ctx.lineJoin = 'round';
+  for (let i = 0; i < 3; i++) {
+    const back = gap + U * (.05 + i * .036) + bob, x = m.x - m.ux * back, y = m.y - m.uy * back;
+    const tailX = x - m.ux * size, tailY = y - m.uy * size;
+    ctx.globalAlpha = alpha * (1 - i * .28);
+    ctx.beginPath();
+    ctx.moveTo(tailX + sideX * size, tailY + sideY * size); ctx.lineTo(x, y); ctx.lineTo(tailX - sideX * size, tailY - sideY * size);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+// The dark peels away from the mic: a soft-edged wave with dry-brush scratches along its front.
 function peelDark(progress, fade, scratches) {
-  const g = dark.getContext('2d'), cx = W / 2, cy = -H * .12, far = hypot(W / 2, H * 1.12) * 1.1;
+  const m = micSpot(), back = (Math.abs(m.ux) * W + Math.abs(m.uy) * H) * .12, cx = m.x + m.ux * back, cy = m.y + m.uy * back;
+  const g = dark.getContext('2d'), far = hypot(Math.max(cx, W - cx), Math.max(cy, H - cy)) * 1.1, inward = Math.atan2(-m.uy, -m.ux);
   const front = Math.max(2, progress * far);
   g.globalCompositeOperation = 'destination-out'; g.lineCap = 'round';
   const wave = g.createRadialGradient(cx, cy, 0, cx, cy, front);
   wave.addColorStop(0, `rgba(0,0,0,${fade})`); wave.addColorStop(.72, `rgba(0,0,0,${fade})`); wave.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = wave; g.fillRect(0, 0, W, H);
   for (let i = 0; i < scratches; i++) {
-    const span = rand(.08, .4), s = rand(.1, Math.PI - .1 - span);
+    const span = rand(.08, .4), s = inward - Math.PI / 2 + rand(.1, Math.PI - .1 - span);
     g.strokeStyle = `rgba(0,0,0,${rand(.35, .9)})`; g.lineWidth = rand(.8, 3.5);
     g.beginPath(); g.arc(cx, cy, Math.max(1, front + rand(-U * .14, U * .05)), s, s + span); g.stroke();
   }
@@ -684,9 +707,9 @@ function mixPage(text, moved, target, reward) {
   };
 }
 const nightPage = {
-  text: 'Uh-oh. Who turned out the light? Huff and puff to blow the dark away!', night: true, arrow: 16,
+  text: 'Uh-oh. Who turned out the light? Huff and puff at the arrows to blow the dark away!', night: true, arrow: 16,
   enter() {
-    scraped = 0; this.wind = 0; this.scratchDebt = 0; buildDark(); this.done = false; this.layout();
+    scraped = 0; this.wind = 0; this.scratchDebt = 0; this.gusts = []; this.gustDebt = 0; buildDark(); this.done = false; this.layout();
     document.body.classList.add('night');
   },
   layout() {
@@ -701,6 +724,8 @@ const nightPage = {
   tick(dt) {
     // The words sit at the foot of the page, the last place to clear, so they stay light until then.
     document.body.classList.toggle('night', scraped < .93);
+    for (const s of this.gusts) { s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt * 1.3; }
+    this.gusts = this.gusts.filter(s => s.life > 0);
     if (this.done) {
       // The last of the black keeps thinning while the whole layer fades out.
       peelDark(1, .06, 0);
@@ -715,12 +740,36 @@ const nightPage = {
       const scratches = Math.min(10, Math.floor(this.scratchDebt));
       this.scratchDebt -= scratches;
       peelDark(scraped, clamp(this.wind * dt * 3, 0, .2), scratches);
+      const m = micSpot(), inward = Math.atan2(-m.uy, -m.ux);
+      // The breath is a narrow stream of chalk lines leaving the mic.
+      this.gustDebt += this.wind * dt * 70;
+      for (; this.gustDebt >= 1; this.gustDebt--) {
+        if (this.gusts.length >= 50) continue;
+        const a = inward + rand(-.5, .5), speed = U * rand(1.1, 2), along = rand(-U * .06, U * .06);
+        this.gusts.push({ x: m.x - m.uy * along, y: m.y + m.ux * along, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, life: 1 });
+      }
+      // Dots are pushed straight away from the mic, and hardly at all until the wave has reached them.
+      const front = scraped * hypot(W, H);
       for (const d of live()) {
-        d.vx += Math.sin(pageT * 5 + d.rot) * this.wind * U * 3.2 * dt;
-        d.vy += (.7 + .5 * Math.sin(pageT * 3.7 + d.rot * 2)) * this.wind * U * 3.2 * dt;
+        const dx = d.x - m.x, dy = d.y - m.y, q = hypot(dx, dy) || 1;
+        const push = this.wind * U * 5.5 * (.12 + .88 * clamp((front - q) / (U * .25) + 1, 0, 1)) * dt;
+        const flutter = Math.sin(pageT * 5 + d.rot) * .3;
+        d.vx += (dx / q - dy / q * flutter) * push;
+        d.vy += (dy / q + dx / q * flutter) * push;
       }
     }
     if (scraped >= 1) this.finish();
+  },
+  drawOver() {
+    const onDark = nightAlpha > .45;
+    ctx.save();
+    ctx.strokeStyle = onDark ? '#F4F2EC' : '#17171A'; ctx.lineCap = 'round';
+    for (const s of this.gusts) {
+      ctx.globalAlpha = s.life * (onDark ? .75 : .3); ctx.lineWidth = U * .006 * (.4 + s.life);
+      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - s.vx * .07, s.y - s.vy * .07); ctx.stroke();
+    }
+    ctx.restore();
+    if (!this.done) drawMicHint('#F4F2EC', clamp(1 - this.wind * 3, 0, 1) * clamp(1 - scraped * 1.6, 0, 1));
   },
   drag(x0, y0, x1, y1) {
     if (this.done) return;
@@ -731,23 +780,50 @@ const nightPage = {
   exit() { document.body.classList.remove('night'); }
 };
 const singPage = {
-  text: 'Good morning! Sing to the sun and help it grow. Laaaa!', arrow: 16,
+  text: 'Good morning! Sing right at the sun and help it grow. Laaaa!', arrow: 16,
   enter() {
-    this.grow = 0; this.done = false; this.layout();
+    this.grow = 0; this.done = false; this.waves = []; this.waveDebt = 0; this.singing = 0; this.layout();
   },
   layout() {
-    const A = area();
-    [this.sun] = arrange([{ color: 'yellow', x: A.w / 2, y: A.y + A.h / 2, r: U * .09 }]);
-    this.max = Math.min(A.w, A.h) * .46;
+    const A = area(), r = U * .09 + (Math.min(A.w, A.h) * .58 - U * .09) * this.grow, p = this.place(r);
+    [this.sun] = arrange([{ color: 'yellow', x: p.x, y: p.y, r }]);
+    this.max = Math.min(A.w, A.h) * .58;
+  },
+  // The sun hangs off the edge the mic is on, so singing at the sun is singing at the mic. It stays clear of the words at the foot.
+  place(r) {
+    const A = area(), m = micSpot();
+    return { x: m.x - m.ux * r * .35, y: clamp(m.y, A.y, A.y + A.h) - m.uy * r * .35, ux: m.ux, uy: m.uy };
   },
   tick(dt) {
+    for (const w of this.waves) { w.r += U * .75 * dt; w.life -= dt * 1.1; }
+    this.waves = this.waves.filter(w => w.life > 0);
     if (this.done || !this.sun) return;
     const held = pointers.size > 0 && (!ear.live || pageT > 8);
     const sing = Math.max(ear.level, keysHeld.KeyV ? .8 : 0, held ? .6 : 0);
+    this.singing += (sing - this.singing) * Math.min(1, dt * 6);
     this.grow = clamp(this.grow + (sing > 0 ? sing * dt / 2.4 : -dt * .04), 0, 1);
     this.sun.tr = U * .09 + (this.max - U * .09) * this.grow;
-    if (sing > 0) this.sun.wob = .1;
+    const p = this.place(this.sun.tr);
+    this.sun.hx = p.x; this.sun.hy = p.y;
+    if (sing > 0) {
+      this.sun.wob = .1;
+      // Rings of sound leave the sun in one direction, out across the page.
+      this.waveDebt += dt * 5;
+      if (this.waveDebt >= 1) { this.waveDebt = 0; this.waves.push({ r: this.sun.r, life: 1, power: sing }); }
+    }
     if (this.grow >= 1) { this.done = true; audio.cheer(); say('What a big voice!'); next(1.8); }
+  },
+  drawOver() {
+    if (!this.sun) return;
+    const p = this.place(this.sun.r), inward = Math.atan2(-p.uy, -p.ux);
+    ctx.save();
+    ctx.strokeStyle = '#17171A'; ctx.lineCap = 'round';
+    for (const w of this.waves) {
+      ctx.globalAlpha = w.life * .7; ctx.lineWidth = U * (.004 + .006 * w.power) * (.4 + w.life);
+      ctx.beginPath(); ctx.arc(this.sun.x, this.sun.y, w.r, inward - .7, inward + .7); ctx.stroke();
+    }
+    ctx.restore();
+    if (!this.done) drawMicHint('#17171A', clamp(1 - this.singing * 3, 0, 1) * clamp(1 - this.grow * 3, 0, 1) * .8, hypot(micSpot().x - this.sun.x, micSpot().y - this.sun.y) + this.sun.r + U * .02);
   }
 };
 const CLAP_WORDS = ['Clap!', 'Again!', 'One more!', 'Bigger! Keep going!', 'Louder!'];
