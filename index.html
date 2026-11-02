@@ -195,7 +195,16 @@ function area() {
   const top = $('sound').offsetTop + 12;
   return { x: 0, y: top, w: W, h: Math.max(80, H - capH - top) };
 }
+// iOS will not let a web page lock its rotation, so on the tilting pages the game turns itself back the other way instead.
+let heldAngle = null;
+function screenAngle() { return window.orientation !== undefined ? window.orientation : (screen.orientation ? screen.orientation.angle : 0); }
+function heldTurn() { return heldAngle === null ? 0 : heldAngle - screenAngle(); }
 function resize() {
+  const turn = heldTurn();
+  // The new size can arrive just before the new angle. That is a rotation on its way, not a real resize.
+  if (!turn && heldAngle !== null && W !== H && W === window.innerHeight && H === window.innerWidth) return;
+  document.body.style.cssText = turn ? `position:fixed;left:50%;top:50%;width:${W}px;height:${H}px;transform:translate(-50%,-50%) rotate(${turn}deg)` : '';
+  if (turn || (heldAngle !== null && W === window.innerWidth && H === window.innerHeight)) return;
   DPR = Math.min(2, window.devicePixelRatio || 1);
   // A page opened in the background can report zero size, and drawing a zero-size canvas throws.
   W = Math.max(1, window.innerWidth); H = Math.max(1, window.innerHeight); U = Math.min(W, H);
@@ -354,8 +363,7 @@ const sense = {
     this.live = true;
     const b = e.beta * Math.PI / 180, c = e.gamma * Math.PI / 180;
     const gx = Math.cos(b) * Math.sin(c), gy = Math.sin(b);
-    const raw = window.orientation !== undefined ? window.orientation : (screen.orientation ? screen.orientation.angle : 0);
-    const a = raw * Math.PI / 180;
+    const a = (heldAngle === null ? screenAngle() : heldAngle) * Math.PI / 180;
     const sx = gx * Math.cos(a) + gy * Math.sin(a), sy = -gx * Math.sin(a) + gy * Math.cos(a);
     this.x += (sx - this.x) * .25; this.y += (sy - this.y) * .25;
   },
@@ -439,7 +447,8 @@ function scatterSpecs(colors, rFrac, seed = 3) {
   }));
 }
 function step(dt) {
-  const gv = sense.gravity(), G = U * 3.2;
+  // The tilting pages react to a gentle tip, because held near flat like a tray the screen does not rotate at all.
+  const gv = sense.gravity(), G = U * (page && page.motion ? 6 : 3.2);
   for (const d of dots) {
     d.r += (d.tr - d.r) * Math.min(1, dt * 7);
     d.sv += (1 - d.s) * 170 * dt; d.sv *= Math.exp(-11 * dt); d.s += d.sv * dt;
@@ -558,8 +567,22 @@ function tickleOnce(text, idx, color, base) {
       this.t = this.ds[idx];
     },
     tick() { hintWobble([this.t]); },
-    tap(d) { if (d === this.t) this.rubbed(d, d.r * 1.4); },
-    rub(d, dist) { if (d === this.t) this.rubbed(d, dist); },
+    tap(d) { if (d === this.t) this.rubbed(d, d.r * 1.4); else if (d) this.t.wob = .5; },
+    rub(d, dist) { if (d === this.t) this.rubbed(d, dist); else this.t.wob = .5; },
+    // A looping arrow runs round the dot, showing which one to tickle and how. It fades as the tickling starts.
+    drawOver() {
+      const d = this.t, alpha = clamp(1 - d.rub * 3, 0, 1);
+      if (this.done || !alpha) return;
+      const R = d.r * 1.24, size = U * .026, end = pageT * 1.8 + TAU * .85;
+      const tipX = d.x + Math.cos(end) * R, tipY = d.y + Math.sin(end) * R, dir = end + Math.PI / 2;
+      ctx.save();
+      ctx.globalAlpha = alpha; ctx.strokeStyle = '#17171A'; ctx.lineWidth = U * .008; ctx.lineCap = ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.arc(d.x, d.y, R, pageT * 1.8, end);
+      ctx.moveTo(tipX - Math.cos(dir - .55) * size, tipY - Math.sin(dir - .55) * size);
+      ctx.lineTo(tipX, tipY);
+      ctx.lineTo(tipX - Math.cos(dir + .55) * size, tipY - Math.sin(dir + .55) * size);
+      ctx.stroke(); ctx.restore();
+    },
     rubbed(d, dist) {
       if (this.done) return;
       if (!d.rub) { setColor(d, color); d.settle = false; }
@@ -806,12 +829,12 @@ const pages = [
     }, tick() { hintWobble(live()); } },
   boopPage('Hello, little dot. Give it a boop.', 1),
   boopPage('Oh! A friend. One more boop.', 2),
-  tickleOnce('Tickle this one. Round and round.', 0, 'red', ['yellow', 'yellow', 'yellow']),
-  tickleOnce('Hee hee! It went red. Now tickle the last one.', 2, 'blue', ['red', 'yellow', 'yellow']),
+  tickleOnce('Tickle the dot with the arrow. Round and round.', 0, 'red', ['yellow', 'yellow', 'yellow']),
+  tickleOnce('Hee hee! It went red. Now tickle the dot with the arrow.', 2, 'blue', ['red', 'yellow', 'yellow']),
   fillPage,
   wigglePage,
-  leanPage('Tip it to the left. Wheee!', -1),
-  leanPage('Now all the way over to the right.', 1),
+  leanPage('Hold it flat like a tray. Now tip it to the left. Wheee!', -1),
+  leanPage('Now tip it gently over to the right.', 1),
   huntPage('Can you find every blue one? Boop it away!', 'blue'),
   huntPage('Now every red one.', 'red'),
   mixPage('Slide the blue one onto the yellow one.', 'blue', 'yellow', 'Look! Green!'),
@@ -822,6 +845,7 @@ const pages = [
 
 function go(i) {
   if (page && page.exit) page.exit();
+  if (!!pages[i].motion !== (heldAngle !== null)) { heldAngle = pages[i].motion ? screenAngle() : null; resize(); }
   page = pages[i]; pageIndex = i; pageT = 0; idleT = 0; timers = [];
   $('next').hidden = true;
   $('caption').textContent = '';
@@ -842,11 +866,19 @@ function hit(x, y) {
   }
   return null;
 }
+// Where a finger is on the game's own page, which is not where it is on the screen while the game is turned back.
+function touchAt(e) {
+  const turn = heldTurn();
+  if (!turn) return { x: e.clientX, y: e.clientY };
+  const a = -turn * Math.PI / 180, dx = e.clientX - window.innerWidth / 2, dy = e.clientY - window.innerHeight / 2;
+  return { x: W / 2 + dx * Math.cos(a) - dy * Math.sin(a), y: H / 2 + dx * Math.sin(a) + dy * Math.cos(a) };
+}
 canvas.addEventListener('pointerdown', e => {
   audio.init(); idleT = 0; reviveMic();
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* finger already lifted */ }
-  const d = hit(e.clientX, e.clientY);
-  pointers.set(e.pointerId, { dot: d, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: performance.now(), moved: 0 });
+  const { x, y } = touchAt(e);
+  const d = hit(x, y);
+  pointers.set(e.pointerId, { dot: d, x, y, x0: x, y0: y, t: performance.now(), moved: 0 });
   if (d) {
     squish(d); audio.note(d.color);
     if (page.drag === true || d.free) { d.held++; d.vx = d.vy = 0; }
@@ -855,23 +887,25 @@ canvas.addEventListener('pointerdown', e => {
 canvas.addEventListener('pointermove', e => {
   const p = pointers.get(e.pointerId); if (!p) return;
   idleT = 0;
-  const dist = hypot(e.clientX - p.x, e.clientY - p.y); p.moved += dist;
-  if (typeof page.drag === 'function') page.drag(p.x, p.y, e.clientX, e.clientY);
+  const { x, y } = touchAt(e);
+  const dist = hypot(x - p.x, y - p.y); p.moved += dist;
+  if (typeof page.drag === 'function') page.drag(p.x, p.y, x, y);
   const d = p.dot;
   if (d && d.held) {
-    d.vx = (e.clientX - p.x) * 30; d.vy = (e.clientY - p.y) * 30;
-    d.x = e.clientX; d.y = e.clientY; d.hx = d.x; d.hy = d.y;
+    d.vx = (x - p.x) * 30; d.vy = (y - p.y) * 30;
+    d.x = x; d.y = y; d.hx = d.x; d.hy = d.y;
   } else if (page.rub) {
-    const over = hit(e.clientX, e.clientY);
+    const over = hit(x, y);
     if (over) page.rub(over, dist);
   }
-  p.x = e.clientX; p.y = e.clientY;
+  p.x = x; p.y = y;
 });
 function endPointer(e) {
   const p = pointers.get(e.pointerId); if (!p) return;
   pointers.delete(e.pointerId);
   if (p.dot && p.dot.held) p.dot.held--;
-  if (p.moved < 14 && performance.now() - p.t < 650 && page.tap) page.tap(p.dot && !p.dot.dead ? p.dot : null, e.clientX, e.clientY);
+  const { x, y } = touchAt(e);
+  if (p.moved < 14 && performance.now() - p.t < 650 && page.tap) page.tap(p.dot && !p.dot.dead ? p.dot : null, x, y);
 }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', e => { const p = pointers.get(e.pointerId); if (p && p.dot && p.dot.held) p.dot.held--; pointers.delete(e.pointerId); });
