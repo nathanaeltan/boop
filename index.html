@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Boop the Dot</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Boop">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#FBFAF6">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shadows+Into+Light+Two&display=swap">
+<style>
+/* A board book you can hold: one sheet of paper, painted dots, a line of pen lettering at the foot. */
+:root {
+  color-scheme: light;
+  --paper: #FBFAF6;
+  --ink: #17171A;
+  --night: #111215;
+  --chalk: #F4F2EC;
+  --title: #2A55A8;
+  --hand: "Shadows Into Light Two", "Bradley Hand", "Noteworthy", "Comic Sans MS", cursive;
+}
+html, body {
+  height: 100%; margin: 0; overflow: hidden; background: var(--paper);
+  overscroll-behavior: none; touch-action: none;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+}
+body.night { background: var(--night); }
+#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#caption {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  padding: 10px max(20px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
+  text-align: center; text-wrap: balance; color: var(--ink); pointer-events: none;
+  font: 400 clamp(19px, 3.7vmin, 34px)/1.28 var(--hand);
+  letter-spacing: .07em; text-transform: uppercase;
+  transition: opacity .25s, color .5s, text-shadow .5s;
+}
+#caption.fade { opacity: 0; }
+body.night #caption { color: var(--chalk); text-shadow: 0 0 3px var(--night), 0 0 9px var(--night), 0 0 16px var(--night); }
+.icon-btn {
+  position: fixed; background: none; border: 0; padding: 10px; color: var(--ink);
+  opacity: .55; cursor: pointer; touch-action: manipulation; transition: color .5s, opacity .3s;
+}
+.icon-btn:focus-visible { outline: 2px dashed currentColor; outline-offset: 2px; }
+body.night .icon-btn { color: var(--chalk); }
+#sound { top: calc(6px + env(safe-area-inset-top, 0px)); right: calc(8px + env(safe-area-inset-right, 0px)); }
+#next { bottom: calc(10px + env(safe-area-inset-bottom, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); opacity: .85; animation: nudge 1.4s ease-in-out infinite; }
+@keyframes nudge { 50% { transform: translateX(7px); } }
+#cover { position: fixed; inset: 0; pointer-events: none; color: var(--title); font-family: var(--hand); text-transform: uppercase; }
+#cover h1 { position: absolute; left: 0; right: 0; margin: 0; text-align: center; font-weight: 400; font-size: clamp(54px, 15vmin, 150px); letter-spacing: .12em; line-height: 1; }
+#t1 { bottom: calc(50% + 15vmin); }
+#t2 { top: calc(50% + 15vmin); }
+#grownups {
+  position: absolute; left: 0; right: 0; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  margin: 0; padding-inline: 24px; text-align: center; color: #B3262E;
+  font-size: clamp(14px, 2.5vmin, 21px); letter-spacing: .06em; text-wrap: balance;
+}
+#start { position: fixed; inset: 0; width: 100%; height: 100%; background: none; border: 0; cursor: pointer; }
+#start:focus-visible { outline: none; }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Painted dots to tap, tilt, clap at and blow on"></canvas>
+<div id="caption" aria-live="polite"></div>
+<div id="cover">
+  <h1 id="t1">Boop</h1>
+  <h1 id="t2">the dot</h1>
+  <p id="grownups">Grown-ups: tap the dot, then say yes so the dots can feel tilts and hear claps.</p>
+</div>
+<button id="start" aria-label="Start the game"></button>
+<button id="sound" class="icon-btn" aria-label="Turn sound off">
+  <svg width="30" height="30" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.2 4.3 18l5 .2 6.4 5.3-.3-17.2-6 5.6z"/><path id="wave" d="M19.5 11c1.6 2.4 1.6 5.4 0 8M23 8c2.9 4.2 2.9 9.8 0 14"/><path id="mute" d="M20 11.5l6 7M26 11.5l-6 7" hidden/></svg>
+</button>
+<button id="next" class="icon-btn" aria-label="Next page" hidden>
+  <svg width="58" height="34" viewBox="0 0 58 34" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18.4c14-1.6 31-1.2 50-.9"/><path d="M42.6 8.2c3.6 3.8 7.2 7 10.8 9.4-3.8 2.4-7.4 5.2-10.2 8.6"/></svg>
+</button>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const canvas = $('stage'), ctx = canvas.getContext('2d');
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const rand = (a = 1, b) => b === undefined ? Math.random() * a : a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const hypot = Math.hypot;
+const TAU = Math.PI * 2;
+
+/* ---------- paint ---------- */
+const PAINT = { red: '#D6202E', yellow: '#F5C31C', blue: '#5AA3DB' };
+const COLORS = ['red', 'yellow', 'blue'];
+
+function seeded(a) {
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+function shade(hex, k) {
+  const n = parseInt(hex.slice(1), 16), t = k < 0 ? 0 : 255, m = Math.abs(k);
+  const c = s => Math.round(((n >> s) & 255) * (1 - m) + t * m);
+  return `${c(16)},${c(8)},${c(0)}`;
+}
+// One gouache dot: a slightly wonky outline, circular brush drag, dry white streaks, a pale rim where the paint pooled.
+function paintDot(hex, seed, size = 512) {
+  const rnd = seeded(seed), c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d'), m = size / 2, R = size * 0.47;
+  const waves = [2, 3, 4, 5, 7].map((k, i) => [k, rnd() * TAU, (0.012 - i * 0.0015) * (0.5 + rnd())]);
+  g.beginPath();
+  for (let i = 0; i <= 200; i++) {
+    const t = i / 200 * TAU;
+    let r = 1; for (const [k, p, a] of waves) r += a * Math.sin(k * t + p);
+    g[i ? 'lineTo' : 'moveTo'](m + Math.cos(t) * R * r, m + Math.sin(t) * R * r);
+  }
+  g.closePath(); g.fillStyle = hex; g.fill(); g.clip();
+  g.lineCap = 'round';
+  // The brush circles an off-centre point, so the strokes never read as neat target rings.
+  const ox = (rnd() - .5) * R * .9, oy = (rnd() - .5) * R * .9;
+  for (let i = 0; i < 90; i++) {
+    const k = (rnd() - .5) * .22;
+    g.strokeStyle = `rgba(${shade(hex, k)},${.05 + rnd() * .14})`;
+    g.lineWidth = size * (.012 + rnd() * .05);
+    const s = rnd() * TAU;
+    g.beginPath(); g.arc(m + ox, m + oy, rnd() * R * 1.5, s, s + .25 + rnd() * 1.1); g.stroke();
+  }
+  for (let i = 0; i < 9; i++) {
+    const s = rnd() * TAU, r0 = R * (.35 + rnd() * .9), span = .08 + rnd() * .3;
+    for (let j = 0; j < 5; j++) {
+      g.strokeStyle = `rgba(255,255,255,${.06 + rnd() * .3})`;
+      g.lineWidth = size * (.001 + rnd() * .004);
+      const a = s + rnd() * .06;
+      g.beginPath(); g.arc(m + ox, m + oy, r0 + rnd() * size * .025, a, a + span * (.5 + rnd())); g.stroke();
+    }
+  }
+  g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = size * .006;
+  const s = rnd() * TAU;
+  g.beginPath(); g.arc(m, m, R * .94, s, s + .5 + rnd() * .9); g.stroke();
+  return c;
+}
+const SPRITES = {};
+COLORS.forEach((n, i) => { SPRITES[n] = [0, 1, 2].map(v => paintDot(PAINT[n], 11 + i * 17 + v * 101)); });
+
+/* ---------- screen ---------- */
+let W = 0, H = 0, U = 0, DPR = 1;
+const paper = document.createElement('canvas');
+const dark = document.createElement('canvas');
+function buildPaper() {
+  paper.width = W * DPR; paper.height = H * DPR;
+  const g = paper.getContext('2d');
+  g.fillStyle = '#FBFAF6'; g.fillRect(0, 0, paper.width, paper.height);
+  const rnd = seeded(7), n = Math.floor(W * H / 420);
+  for (let i = 0; i < n; i++) {
+    g.fillStyle = rnd() > .5 ? 'rgba(120,110,90,.035)' : 'rgba(255,255,255,.5)';
+    g.fillRect(rnd() * paper.width, rnd() * paper.height, 1 + rnd() * 2 * DPR, 1 + rnd() * 2 * DPR);
+  }
+}
+// The black layer is kept at normal resolution: it is soft paint, and re-erasing a full-detail layer every frame made the page stutter.
+function buildDark() {
+  dark.width = W; dark.height = H;
+  const g = dark.getContext('2d');
+  g.globalCompositeOperation = 'source-over';
+  g.fillStyle = '#111215'; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 40; i++) {
+    g.strokeStyle = `rgba(255,255,255,${rand(.01, .04)})`; g.lineWidth = rand(1, 5);
+    const y = rand(H); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y + rand(-40, 40)); g.stroke();
+  }
+}
+// The mic is at the top edge, so the dark peels away downward from there: a soft-edged wave with dry-brush scratches along its front.
+function peelDark(progress, fade, scratches) {
+  const g = dark.getContext('2d'), cx = W / 2, cy = -H * .12, far = hypot(W / 2, H * 1.12) * 1.1;
+  const front = Math.max(2, progress * far);
+  g.globalCompositeOperation = 'destination-out'; g.lineCap = 'round';
+  const wave = g.createRadialGradient(cx, cy, 0, cx, cy, front);
+  wave.addColorStop(0, `rgba(0,0,0,${fade})`); wave.addColorStop(.72, `rgba(0,0,0,${fade})`); wave.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = wave; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < scratches; i++) {
+    const span = rand(.08, .4), s = rand(.1, Math.PI - .1 - span);
+    g.strokeStyle = `rgba(0,0,0,${rand(.35, .9)})`; g.lineWidth = rand(.8, 3.5);
+    g.beginPath(); g.arc(cx, cy, Math.max(1, front + rand(-U * .14, U * .05)), s, s + span); g.stroke();
+  }
+  g.globalCompositeOperation = 'source-over';
+}
+function scrapeAt(x0, y0, x1, y1) {
+  const g = dark.getContext('2d');
+  g.globalCompositeOperation = 'destination-out'; g.lineCap = 'round';
+  g.strokeStyle = 'rgba(0,0,0,.9)'; g.lineWidth = U * .09;
+  g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+  g.globalCompositeOperation = 'source-over';
+}
+function area() {
+  const capH = $('caption').offsetHeight || 80;
+  const top = $('sound').offsetTop + 12;
+  return { x: 0, y: top, w: W, h: Math.max(80, H - capH - top) };
+}
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  // A page opened in the background can report zero size, and drawing a zero-size canvas throws.
+  W = Math.max(1, window.innerWidth); H = Math.max(1, window.innerHeight); U = Math.min(W, H);
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  buildPaper(); buildDark();
+  if (page && page.layout) page.layout();
+  for (const d of dots) { d.hx = clamp(d.hx, 0, W); d.hy = clamp(d.hy, 0, H); }
+  if (page && page.night && scraped) for (let i = 0; i < 10; i++) peelDark(scraped, .2, 8);
+}
+
+/* ---------- sound ---------- */
+const NOTES = { red: [196, 261.6, 293.7], yellow: [329.6, 392, 440], blue: [523.3, 587.3, 659.3] };
+const audio = {
+  ctx: null, master: null, on: true, quietUntil: 0,
+  init() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!this.ctx) {
+      this.ctx = new AC();
+      this.master = this.ctx.createGain(); this.master.gain.value = .9;
+      this.master.connect(this.ctx.destination);
+    }
+    if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
+  },
+  tone(f, dur = .35, vol = .22, type = 'sine', delay = 0) {
+    if (!this.on || !this.ctx) return;
+    const t = this.ctx.currentTime + delay, o = this.ctx.createOscillator(), a = this.ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    a.gain.setValueAtTime(.0001, t); a.gain.exponentialRampToValueAtTime(vol, t + .012);
+    a.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    o.connect(a); a.connect(this.master); o.start(t); o.stop(t + dur + .02);
+    this.quietUntil = Math.max(this.quietUntil, performance.now() + (delay + dur) * 1000 + 120);
+  },
+  note(color) { const f = pick(NOTES[color] || NOTES.yellow); this.tone(f, .4, .24); this.tone(f * 2, .16, .07, 'triangle'); },
+  plop() {
+    if (!this.on || !this.ctx) return;
+    const t = this.ctx.currentTime, o = this.ctx.createOscillator(), a = this.ctx.createGain();
+    o.frequency.setValueAtTime(240, t); o.frequency.exponentialRampToValueAtTime(760, t + .12);
+    a.gain.setValueAtTime(.26, t); a.gain.exponentialRampToValueAtTime(.0001, t + .18);
+    o.connect(a); a.connect(this.master); o.start(t); o.stop(t + .2);
+    this.quietUntil = Math.max(this.quietUntil, performance.now() + 300);
+  },
+  pop() {
+    if (!this.on || !this.ctx) return;
+    const t = this.ctx.currentTime, o = this.ctx.createOscillator(), a = this.ctx.createGain();
+    o.frequency.setValueAtTime(900, t); o.frequency.exponentialRampToValueAtTime(140, t + .1);
+    a.gain.setValueAtTime(.3, t); a.gain.exponentialRampToValueAtTime(.0001, t + .13);
+    o.connect(a); a.connect(this.master); o.start(t); o.stop(t + .15);
+    this.quietUntil = Math.max(this.quietUntil, performance.now() + 250);
+  },
+  cheer() { [392, 493.9, 587.3, 784].forEach((f, i) => this.tone(f, .34, .17, 'sine', i * .09)); },
+  // Short on purpose: the mic stops listening while the game makes a sound, so a long one would miss the next clap.
+  clapTone(step) { this.tone([392, 440, 523.3, 587.3, 659.3][step % 5], .09, .24); },
+  rattle() { for (let i = 0; i < 7; i++) this.tone(rand(420, 1250), .08, .15, 'triangle', i * .045 + rand(.015)); },
+  // True while the game is making noise, so the mic does not mistake it for a clap or a blow.
+  busy(now) { return now < this.quietUntil; }
+};
+
+/* ---------- ears ---------- */
+const ear = {
+  live: false, an: null, level: 0, blow: 0, voice: 0, sustain: 0, floor: .005, avg: .005,
+  flat: 0, cand: null, refractory: 0, onClap: null, rms: 0, last: 0,
+  attach(source, ctx) {
+    if (this.an) this.an.disconnect();
+    this.source = source;
+    this.an = ctx.createAnalyser();
+    this.an.fftSize = 2048; this.an.smoothingTimeConstant = 0;
+    source.connect(this.an);
+    // Safari can leave audio nodes idle if they lead nowhere, so this one feeds a silent output.
+    const silent = ctx.createGain(); silent.gain.value = 0;
+    this.an.connect(silent); silent.connect(ctx.destination);
+    this.td = new Float32Array(this.an.fftSize);
+    this.fd = new Float32Array(this.an.frequencyBinCount);
+    this.hz = ctx.sampleRate / this.an.fftSize;
+    this.live = true;
+  },
+  update(now) {
+    this.level = this.blow = this.voice = 0;
+    if (!this.an) return;
+    const dt = Math.min(.1, (now - this.last) / 1000 || .016); this.last = now;
+    this.an.getFloatTimeDomainData(this.td);
+    let sum = 0; for (let i = 0; i < this.td.length; i++) sum += this.td[i] * this.td[i];
+    const rms = this.rms = Math.sqrt(sum / this.td.length);
+    if (audio.busy(now)) { this.cand = null; this.sustain = 0; this.avg += (rms - this.avg) * .2; return; }
+
+    this.an.getFloatFrequencyData(this.fd);
+    let low = 0, all = 0, logSum = 0, n = 0, arith = 0;
+    for (let i = 1; i < this.fd.length; i++) {
+      const f = i * this.hz; if (f > 9000) break;
+      const p = Math.pow(10, Math.max(-140, this.fd[i]) / 10);
+      all += p; if (f < 700) low += p;
+      if (f > 200 && f < 4000) { logSum += Math.log(p + 1e-14); arith += p; n++; }
+    }
+    const flat = n ? Math.exp(logSum / n) / (arith / n + 1e-14) : 0;
+    this.flat += (flat - this.flat) * .25;
+    const lowShare = all ? low / all : 0;
+    this.lowShare = (this.lowShare || 0) + (lowShare - (this.lowShare || 0)) * .25;
+
+    // Background noise: drops fast when the room goes quiet, creeps up slowly so a long blow is not learned as "quiet".
+    this.floor += (rms - this.floor) * (rms < this.floor ? .03 : .0005);
+    this.floor = clamp(this.floor, .0003, .08);
+
+    // Clap: a sudden jump that has mostly died away under a tenth of a second later. On an iPad claps measured about .004 to
+    // .006 and were bass-heavy, but a bump from holding it is almost nothing but bass, and that is how the two differ.
+    if (this.cand) {
+      if (rms > this.cand.peak) { this.cand.peak = rms; this.cand.low = lowShare; }
+      if (now - this.cand.t >= 85) {
+        if (rms < this.cand.peak * .5 && this.cand.low < .93) {
+          this.refractory = now + 130;
+          if (this.onClap) this.onClap();
+        } else this.refractory = now + 90;
+        this.cand = null;
+      }
+    } else if (now > this.refractory && rms > Math.max(.0025, this.floor * 6) && rms > this.avg * 3.2) {
+      this.cand = { t: now, peak: rms, low: lowShare };
+    }
+    if (!this.cand) this.avg += (rms - this.avg) * .12;
+
+    const loud = rms > Math.max(.0018, this.floor * 3);
+    this.sustain = loud ? this.sustain + dt : Math.max(0, this.sustain - dt * 3);
+    if (this.sustain > .14) {
+      this.level = clamp((rms - this.floor * 1.5) / .005, .1, 1);
+      if (this.lowShare > .7 || this.flat > .22) this.blow = this.level;
+      else this.voice = this.level;
+    }
+  }
+};
+async function openMic() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !audio.ctx) return;
+  try {
+    // Browser voice clean-up removes exactly what we listen for, so it is all turned off.
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    ear.attach(audio.ctx.createMediaStreamSource(stream), audio.ctx);
+    ear.stream = stream;
+    if (audio.ctx.state !== 'running') audio.ctx.resume().catch(() => {});
+  } catch (e) { /* no mic: every mic page has a touch fallback */ }
+}
+// iOS can leave the mic silenced after the game is interrupted or put in the background, and only a fresh request revives it.
+let micRetryAt = 0;
+async function reviveMic() {
+  const track = ear.stream && ear.stream.getAudioTracks()[0];
+  const now = performance.now();
+  if (!track || !(track.muted || track.readyState === 'ended') || now < micRetryAt) return;
+  micRetryAt = now + 3000;
+  ear.stream.getTracks().forEach(t => t.stop());
+  if (ear.source) ear.source.disconnect();
+  await openMic();
+}
+
+/* ---------- tilt and shake ---------- */
+const sense = {
+  x: 0, y: 0, live: false, jolt: 0, peaks: [], lastShake: 0, onShake: null, keys: {},
+  orient(e) {
+    if (e.beta === null || e.gamma === null) return;
+    this.live = true;
+    const b = e.beta * Math.PI / 180, c = e.gamma * Math.PI / 180;
+    const gx = Math.cos(b) * Math.sin(c), gy = Math.sin(b);
+    const raw = window.orientation !== undefined ? window.orientation : (screen.orientation ? screen.orientation.angle : 0);
+    const a = raw * Math.PI / 180;
+    const sx = gx * Math.cos(a) + gy * Math.sin(a), sy = -gx * Math.sin(a) + gy * Math.cos(a);
+    this.x += (sx - this.x) * .25; this.y += (sy - this.y) * .25;
+  },
+  motion(e) {
+    const a = e.acceleration;
+    let m = 0;
+    if (a && a.x !== null) m = hypot(a.x, a.y, a.z);
+    else if (e.accelerationIncludingGravity) {
+      const g = e.accelerationIncludingGravity;
+      m = Math.abs(hypot(g.x || 0, g.y || 0, g.z || 0) - 9.81);
+    }
+    this.jolt = Math.max(this.jolt, m);
+    const now = performance.now();
+    if (m > 9) {
+      if (!this.peaks.length || now - this.peaks[this.peaks.length - 1] > 70) this.peaks.push(now);
+      this.peaks = this.peaks.filter(t => now - t < 800);
+      if (this.peaks.length >= 2 && now - this.lastShake > 900) { this.lastShake = now; this.peaks = []; if (this.onShake) this.onShake(); }
+    }
+  },
+  gravity() {
+    const k = this.keys;
+    if (k.ArrowLeft || k.ArrowRight || k.ArrowUp || k.ArrowDown)
+      return { x: (k.ArrowRight ? .8 : 0) - (k.ArrowLeft ? .8 : 0), y: (k.ArrowDown ? .8 : 0) - (k.ArrowUp ? .8 : 0) };
+    return { x: Math.abs(this.x) < .03 ? 0 : this.x, y: Math.abs(this.y) < .03 ? 0 : this.y };
+  },
+  listen() {
+    window.addEventListener('deviceorientation', e => this.orient(e));
+    window.addEventListener('devicemotion', e => this.motion(e));
+  }
+};
+
+/* ---------- dots ---------- */
+let dots = [], flecks = [], page = null, pageT = 0, idleT = 0, scraped = 0, nightAlpha = 0, timers = [];
+function makeDot(color, x, y, r) {
+  return { color, spr: pick(SPRITES[color]), x, y, vx: 0, vy: 0, hx: x, hy: y, r: 0, tr: r, free: false, held: 0,
+           rot: rand(TAU), s: .8, sv: 0, wob: 0, dead: false, rub: 0, from: null, mix: 1 };
+}
+function live() { return dots.filter(d => !d.dead); }
+// Moves what is on the page into a new layout: dots of the right colour travel there, spares pop away, missing ones appear.
+function arrange(specs) {
+  const pool = live(), out = [];
+  for (const sp of specs) {
+    let best = null, bd = 1e12;
+    for (const d of pool) { const q = hypot(d.x - sp.x, d.y - sp.y); if (d.color === sp.color && q < bd) { bd = q; best = d; } }
+    let d;
+    if (best) { pool.splice(pool.indexOf(best), 1); d = best; d.hx = sp.x; d.hy = sp.y; d.tr = sp.r; d.free = false; d.rub = 0; d.from = null; d.mix = 1; }
+    else { d = makeDot(sp.color, sp.x, sp.y, sp.r); dots.push(d); }
+    out.push(d);
+  }
+  pool.forEach(d => popDot(d, true));
+  return out;
+}
+function popDot(d, quiet) {
+  d.dead = true; d.tr = 0;
+  const n = quiet ? 3 : 14;
+  for (let i = 0; i < n; i++) {
+    const a = rand(TAU), v = rand(.3, 1.3) * U * (quiet ? .3 : .9);
+    flecks.push({ color: d.color, spr: d.spr, x: d.x + Math.cos(a) * d.r * .6, y: d.y + Math.sin(a) * d.r * .6,
+      vx: Math.cos(a) * v, vy: Math.sin(a) * v, r: rand(.012, .035) * U + d.r * .05, life: 1 });
+  }
+  if (flecks.length > 160) flecks.splice(0, flecks.length - 160);
+  if (!quiet) audio.pop();
+}
+function squish(d, amt = 1) { d.sv -= 3.2 * amt; }
+function cloneDot(d, x, y, r, color = d.color) {
+  const n = makeDot(color, d.x, d.y, r); n.hx = x; n.hy = y; n.vx = (x - d.x) * 3; n.vy = (y - d.y) * 3;
+  dots.push(n); return n;
+}
+function setColor(d, color) { d.from = d.spr; d.color = color; d.spr = pick(SPRITES[color]); d.mix = 0; }
+function release(d, sx = 1) {
+  d.free = true;
+  d.vx += rand(-1, 1) * U * 1.4 * sx; d.vy += rand(-1, 1) * U * 1.4 * sx;
+}
+function scatterSpecs(colors, rFrac, seed = 3) {
+  const A = area(), rnd = seeded(seed), R = rFrac * U, cols = Math.ceil(Math.sqrt(colors.length * A.w / A.h));
+  const rows = Math.ceil(colors.length / cols);
+  return colors.map((color, i) => ({
+    color, r: R * (.9 + rnd() * .2),
+    x: clamp(A.w * ((i % cols) + .5 + (rnd() - .5) * .45) / cols, R, A.w - R),
+    y: clamp(A.y + A.h * (Math.floor(i / cols) + .5 + (rnd() - .5) * .45) / rows, A.y + R, A.y + A.h - R)
+  }));
+}
+function step(dt) {
+  const gv = sense.gravity(), G = U * 3.2;
+  for (const d of dots) {
+    d.r += (d.tr - d.r) * Math.min(1, dt * 7);
+    d.sv += (1 - d.s) * 170 * dt; d.sv *= Math.exp(-11 * dt); d.s += d.sv * dt;
+    if (d.mix < 1 && d.settle) d.mix = Math.min(1, d.mix + dt * 2.5);
+    if (d.wob > 0) { d.wob -= dt; }
+    if (d.held) continue;
+    if (d.free) {
+      d.vx += gv.x * G * dt; d.vy += gv.y * G * dt;
+      const f = Math.exp(-.55 * dt); d.vx *= f; d.vy *= f;
+    } else {
+      d.vx += (d.hx - d.x) * 80 * dt; d.vy += (d.hy - d.y) * 80 * dt;
+      const f = Math.exp(-10 * dt); d.vx *= f; d.vy *= f;
+    }
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    if (d.free) {
+      const b = .5;
+      if (d.x < d.r) { d.x = d.r; d.vx = Math.abs(d.vx) * b; }
+      if (d.x > W - d.r) { d.x = W - d.r; d.vx = -Math.abs(d.vx) * b; }
+      if (d.y < d.r) { d.y = d.r; d.vy = Math.abs(d.vy) * b; }
+      if (d.y > H - d.r) { d.y = H - d.r; d.vy = -Math.abs(d.vy) * b; }
+    }
+  }
+  const fr = dots.filter(d => d.free && !d.dead);
+  for (let it = 0; it < 3; it++) for (let i = 0; i < fr.length; i++) for (let j = i + 1; j < fr.length; j++) {
+    const a = fr[i], b = fr[j], dx = b.x - a.x, dy = b.y - a.y, q = hypot(dx, dy) || .01, m = (a.r + b.r) * .96;
+    if (q >= m) continue;
+    const nx = dx / q, ny = dy / q, o = (m - q) / 2;
+    if (!a.held) { a.x -= nx * o; a.y -= ny * o; }
+    if (!b.held) { b.x += nx * o; b.y += ny * o; }
+    const rv = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+    if (rv < 0) { const k = -rv * .7; a.vx -= nx * k; a.vy -= ny * k; b.vx += nx * k; b.vy += ny * k; }
+  }
+  dots = dots.filter(d => !(d.dead && d.r < 1.5));
+  for (const f of flecks) {
+    f.vx *= Math.exp(-3 * dt); f.vy *= Math.exp(-3 * dt);
+    f.x += f.vx * dt; f.y += f.vy * dt; f.life -= dt * 1.1; f.r *= Math.exp(-.8 * dt);
+  }
+  flecks = flecks.filter(f => f.life > 0);
+}
+function drawSprite(spr, x, y, r, rot, sx, sy, alpha) {
+  const size = r * 2 / .94 * 1;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(sx, sy); ctx.globalAlpha = alpha;
+  ctx.drawImage(spr, -size / 2, -size / 2, size, size); ctx.restore();
+}
+function draw(now) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  ctx.drawImage(paper, 0, 0);
+  if (nightAlpha > .01) { ctx.globalAlpha = nightAlpha; ctx.drawImage(dark, 0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1; }
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // Paint is see-through on paper, so overlaps mix. On the black page it has to sit on top instead.
+  ctx.globalCompositeOperation = nightAlpha > .02 ? 'source-over' : 'multiply';
+  for (const f of flecks) drawSprite(f.spr, f.x, f.y, f.r, 0, 1, 1, clamp(f.life * 1.6, 0, 1));
+  for (const d of dots) {
+    if (d.r < .5) continue;
+    const wob = d.wob > 0 ? Math.sin(now / 70) * .07 : 0;
+    const sx = d.s + wob, sy = 2 - d.s - wob;
+    if (d.from && d.mix < 1) {
+      drawSprite(d.from, d.x, d.y, d.r, d.rot, sx, sy, 1 - d.mix);
+      drawSprite(d.spr, d.x, d.y, d.r, d.rot, sx, sy, d.mix);
+    } else drawSprite(d.spr, d.x, d.y, d.r, d.rot, sx, sy, 1);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  if (page && page.drawOver) page.drawOver();
+}
+
+/* ---------- caption ---------- */
+let capTimer = 0;
+function say(text, opts = {}) {
+  const c = $('caption');
+  c.classList.add('fade');
+  clearTimeout(capTimer);
+  capTimer = setTimeout(() => {
+    c.textContent = text; c.classList.remove('fade');
+    if (page && page.layout && opts.relayout) page.layout();
+  }, 220);
+}
+function after(sec, fn) { timers.push({ t: sec, fn }); }
+
+/* ---------- pages ---------- */
+function row(n, rFrac, yFrac = .5) {
+  const A = area(), R = rFrac * U, gap = Math.min(A.w / (n + .5), R * 3.2);
+  const x0 = A.w / 2 - gap * (n - 1) / 2;
+  return i => ({ x: x0 + gap * i, y: A.y + A.h * yFrac, r: R });
+}
+function freeAll() { for (const d of live()) d.free = true; }
+function hintWobble(ds) { if (idleT > 3.5 && Math.floor(idleT * 2) % 6 === 0) ds.forEach(d => { if (d && !d.dead) d.wob = .35; }); }
+
+function boopPage(text, count) {
+  return {
+    text, arrow: 16,
+    enter() { this.done = false; this.layout(); },
+    layout() {
+      const pos = row(count, .1);
+      this.ds = arrange(Array.from({ length: count }, (_, i) => ({ color: 'yellow', ...pos(i) })));
+    },
+    tick() { hintWobble(this.ds); },
+    tap(d) {
+      if (!d || this.done) return;
+      this.done = true;
+      const pos = row(count + 1, .1);
+      this.ds.forEach((o, i) => { Object.assign(o, { hx: pos(i).x, hy: pos(i).y }); });
+      cloneDot(d, pos(count).x, pos(count).y, pos(count).r);
+      audio.plop();
+      next(1.1);
+    }
+  };
+}
+function tickleOnce(text, idx, color, base) {
+  return {
+    text, arrow: 16,
+    enter() { this.done = false; this.layout(); },
+    layout() {
+      const pos = row(3, .1);
+      this.ds = arrange(base.map((c, i) => ({ color: c, ...pos(i) })));
+      this.t = this.ds[idx];
+    },
+    tick() { hintWobble([this.t]); },
+    tap(d) { if (d === this.t) this.rubbed(d, d.r * 1.4); },
+    rub(d, dist) { if (d === this.t) this.rubbed(d, dist); },
+    rubbed(d, dist) {
+      if (this.done) return;
+      if (!d.rub) { setColor(d, color); d.settle = false; }
+      d.rub += dist / (d.r * 7);
+      d.mix = Math.min(1, d.rub);
+      d.wob = .2;
+      if (Math.random() < .08) audio.note(color);
+      if (d.rub >= 1) { this.done = true; d.settle = true; audio.cheer(); squish(d, 1.5); next(1.1); }
+    }
+  };
+}
+const fillPage = {
+  text: 'Tap a dot to make a baby dot. Fill the whole page!', arrow: 24,
+  enter() { this.counts = [1, 1, 1]; this.done = false; this.layout(); },
+  layout() {
+    const A = area(), wide = A.w > A.h, cols = wide ? 4 : 3, rows = wide ? 3 : 4;
+    const R = Math.min(A.w / cols, A.h / rows) * .36;
+    this.slot = (c, i) => wide
+      ? { x: A.w * (i + .5) / cols, y: A.y + A.h * (c + .5) / rows, r: R }
+      : { x: A.w * (c + .5) / cols, y: A.y + A.h * (i + .5) / rows, r: R };
+    this.size = wide ? cols : rows;
+    const specs = [];
+    COLORS.forEach((color, c) => { for (let i = 0; i < this.counts[c]; i++) specs.push({ color, ...this.slot(c, i) }); });
+    arrange(specs);
+  },
+  tick() { hintWobble(live()); },
+  tap(d) {
+    if (!d || this.done) return;
+    const c = COLORS.indexOf(d.color);
+    if (this.counts[c] >= this.size) { d.wob = .3; return; }
+    const s = this.slot(c, this.counts[c]++);
+    cloneDot(d, s.x, s.y, s.r);
+    audio.plop();
+    if (this.counts.every(n => n >= this.size)) { this.done = true; audio.cheer(); next(1); }
+  }
+};
+const wigglePage = {
+  text: 'Now give the whole thing a little wiggle.', arrow: 12, motion: true,
+  enter() { this.done = false; },
+  shake() {
+    if (this.done) return;
+    this.done = true;
+    live().forEach(d => release(d));
+    next(1.7);
+  },
+  tap(d) { if (!sense.live || pageT > 8) triggerShake(); }
+};
+function leanPage(text, side) {
+  return {
+    text, arrow: 12, motion: true,
+    // Small enough that they all fit on one side of the page, however the device is held.
+    enter() { freeAll(); live().forEach(d => { d.tr = U * .058; }); this.hold = 0; this.done = false; },
+    layout() {},
+    tick(dt) {
+      const ds = live(); if (!ds.length || this.done) return;
+      const inSide = ds.filter(d => side < 0 ? d.x < W * .5 : d.x > W * .5).length / ds.length;
+      this.hold = inSide > .7 ? this.hold + dt : 0;
+      if (this.hold > .5) { this.done = true; audio.cheer(); next(.7); }
+    }
+  };
+}
+function huntPage(text, color) {
+  return {
+    text, arrow: 22,
+    enter() { this.done = false; this.layout(); },
+    layout() {
+      const keep = live().map(d => d.color);
+      if (!keep.includes(color)) keep.push(color, color, color);
+      this.ds = arrange(scatterSpecs(keep, .075, color.length * 5 + 2));
+    },
+    tick() { hintWobble(live().filter(d => d.color === color)); },
+    tap(d) {
+      if (!d || this.done) return;
+      if (d.color !== color) { d.wob = .35; audio.note(d.color); return; }
+      popDot(d);
+      if (!live().some(o => o.color === color)) { this.done = true; audio.cheer(); next(.9); }
+    }
+  };
+}
+function mixPage(text, moved, target, reward) {
+  return {
+    text, arrow: 22, drag: true,
+    enter() { this.done = false; this.layout(); },
+    layout() {
+      const A = area(), R = Math.min(A.w / 3.4, A.h / 3.2) * .95;
+      const wide = A.w > A.h, cx = A.w / 2, cy = A.y + A.h / 2;
+      const dx = wide ? R * 1.25 : 0, dy = wide ? 0 : R * 1.1;
+      [this.m, this.t] = arrange([
+        { color: moved, x: cx - dx, y: cy - dy, r: R * .8 },
+        { color: target, x: cx + dx, y: cy + dy, r: R * .8 }]);
+    },
+    tick() {
+      hintWobble([this.m]);
+      if (this.done || !this.m || this.m.r < 5) return;
+      if (hypot(this.m.x - this.t.x, this.m.y - this.t.y) < (this.m.r + this.t.r) * .62) {
+        this.done = true; audio.cheer(); say(reward); next(2.6);
+      }
+    }
+  };
+}
+const nightPage = {
+  text: 'Uh-oh. Who turned out the light? Huff and puff to blow the dark away!', night: true, arrow: 16,
+  enter() {
+    scraped = 0; this.wind = 0; this.scratchDebt = 0; buildDark(); this.done = false; this.layout();
+    document.body.classList.add('night');
+  },
+  layout() {
+    const A = area(), n = W > H ? 13 : 11, cx = A.w * .1, cy = A.y + A.h / 2, rad = Math.max(A.w * .68, A.h * .5);
+    const specs = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1) - .5) * 1.5;
+      specs.push({ color: COLORS[i % 3], x: Math.min(A.w - U * .05, cx + Math.cos(t) * rad), y: cy + Math.sin(t) * A.h * .52, r: U * .042 });
+    }
+    arrange(specs);
+  },
+  tick(dt) {
+    // The words sit at the foot of the page, the last place to clear, so they stay light until then.
+    document.body.classList.toggle('night', scraped < .93);
+    if (this.done) {
+      // The last of the black keeps thinning while the whole layer fades out.
+      peelDark(1, .06, 0);
+      return;
+    }
+    // Breath arrives in fits and starts, so the wind rises quickly and dies away slowly instead of following every flicker.
+    const push = Math.max(ear.blow, ear.level * .35, keysHeld.KeyB ? .9 : 0);
+    this.wind += (push - this.wind) * Math.min(1, dt * (push > this.wind ? 9 : 2.5));
+    if (this.wind > .01) {
+      scraped += this.wind * dt / 2.6;
+      this.scratchDebt += this.wind * dt * 240;
+      const scratches = Math.min(10, Math.floor(this.scratchDebt));
+      this.scratchDebt -= scratches;
+      peelDark(scraped, clamp(this.wind * dt * 3, 0, .2), scratches);
+      for (const d of live()) {
+        d.vx += Math.sin(pageT * 5 + d.rot) * this.wind * U * 3.2 * dt;
+        d.vy += (.7 + .5 * Math.sin(pageT * 3.7 + d.rot * 2)) * this.wind * U * 3.2 * dt;
+      }
+    }
+    if (scraped >= 1) this.finish();
+  },
+  drag(x0, y0, x1, y1) {
+    if (this.done) return;
+    scrapeAt(x0, y0, x1, y1); scraped += hypot(x1 - x0, y1 - y0) / (U * 16);
+    if (scraped >= 1) this.finish();
+  },
+  finish() { this.done = true; audio.cheer(); next(1.4); },
+  exit() { document.body.classList.remove('night'); }
+};
+const singPage = {
+  text: 'Good morning! Sing to the sun and help it grow. Laaaa!', arrow: 16,
+  enter() {
+    this.grow = 0; this.done = false; this.layout();
+  },
+  layout() {
+    const A = area();
+    [this.sun] = arrange([{ color: 'yellow', x: A.w / 2, y: A.y + A.h / 2, r: U * .09 }]);
+    this.max = Math.min(A.w, A.h) * .46;
+  },
+  tick(dt) {
+    if (this.done || !this.sun) return;
+    const held = pointers.size > 0 && (!ear.live || pageT > 8);
+    const sing = Math.max(ear.level, keysHeld.KeyV ? .8 : 0, held ? .6 : 0);
+    this.grow = clamp(this.grow + (sing > 0 ? sing * dt / 2.4 : -dt * .04), 0, 1);
+    this.sun.tr = U * .09 + (this.max - U * .09) * this.grow;
+    if (sing > 0) this.sun.wob = .1;
+    if (this.grow >= 1) { this.done = true; audio.cheer(); say('What a big voice!'); next(1.8); }
+  }
+};
+const CLAP_WORDS = ['Clap!', 'Again!', 'One more!', 'Bigger! Keep going!', 'Louder!'];
+const clapPage = {
+  text: 'The dots love a party. Clap your hands!', arrow: 18,
+  enter() { this.n = 0; this.done = false; this.layout(); },
+  layout() {
+    const R = .06 * Math.pow(1.3, this.n);
+    this.ds = arrange(scatterSpecs(['red', 'yellow', 'blue', 'blue', 'red', 'yellow', 'yellow', 'red', 'blue'], R, 9));
+  },
+  clap() {
+    if (this.done) return;
+    this.n++;
+    if (this.n >= 5) audio.cheer(); else audio.clapTone(this.n - 1);
+    for (const d of live()) { d.vy -= U * 2.2 * rand(.7, 1.2); d.vx += rand(-1, 1) * U * .6; squish(d, 1.2); }
+    this.layout();
+    if (this.n >= 5) { this.done = true; next(1.2); }
+    else say(CLAP_WORDS[this.n]);
+  },
+  tap(d) { if (d && (!ear.live || pageT > 12)) this.clap(); }
+};
+const popPage = {
+  text: 'Too big! They are going to burst! Pop them, pop them!', arrow: 24,
+  enter() { this.done = false; this.layout(); },
+  layout() {},
+  tick() { hintWobble(live()); },
+  tap(d) {
+    if (!d || this.done) return;
+    popDot(d);
+    if (!live().length) { this.done = true; audio.cheer(); next(.9); }
+  }
+};
+const endPage = {
+  text: 'Ta-da! All gone. What now?',
+  enter() { this.layout(); },
+  layout() {
+    const A = area(), wide = A.w > A.h * .9;
+    [this.again, this.play] = arrange([
+      { color: 'yellow', x: A.w * (wide ? .32 : .5), y: A.y + A.h * (wide ? .46 : .28), r: U * .11 },
+      { color: 'blue', x: A.w * (wide ? .68 : .5), y: A.y + A.h * (wide ? .46 : .68), r: U * .11 }]);
+  },
+  tap(d) {
+    if (d === this.again) { audio.plop(); go(1); }
+    if (d === this.play) { audio.plop(); go(pages.indexOf(playPage)); }
+  },
+  drawOver() {
+    ctx.fillStyle = '#17171A'; ctx.textAlign = 'center';
+    ctx.font = `${Math.round(clamp(U * .036, 17, 30))}px ${getComputedStyle(document.documentElement).getPropertyValue('--hand')}`;
+    for (const [d, t] of [[this.again, 'START OVER'], [this.play, 'PLAY']]) {
+      if (d && !d.dead) ctx.fillText(t, d.x, d.y + d.r + U * .055);
+    }
+  }
+};
+const playPage = {
+  text: 'Your turn! Tap to add dots. Tip, wiggle, clap and blow.', drag: true,
+  enter() { this.c = 0; this.t = 0; live().forEach(d => { d.free = true; }); },
+  layout() {},
+  tap(d, x, y) {
+    if (d) { popDot(d); return; }
+    const color = COLORS[this.c++ % 3];
+    const n = makeDot(color, x, y, U * rand(.045, .1)); n.free = true; dots.push(n);
+    audio.note(color);
+    const ds = live(); if (ds.length > 36) popDot(ds[0], true);
+  },
+  clap() { for (const d of live()) { d.free = true; d.vy -= U * 2.4 * rand(.7, 1.2); d.vx += rand(-1, 1) * U * .7; squish(d); } audio.clapTone(this.claps = (this.claps || 0) + 1); },
+  shake() { live().forEach(d => release(d, 1.3)); },
+  tick(dt) {
+    this.t += dt;
+    const push = Math.max(ear.blow, keysHeld.KeyB ? .9 : 0);
+    if (push > 0) for (const d of live()) { d.free = true; d.vx += rand(-.5, 1) * push * U * 6 * dt; d.vy += rand(-1, .2) * push * U * 6 * dt; }
+    $('next').hidden = false;
+  },
+  nextTo: 0
+};
+
+const pages = [
+  { text: '', cover: true, enter() { this.layout(); }, layout() {
+      arrange([{ color: 'yellow', x: W / 2, y: H / 2, r: U * .1 }]);
+    }, tick() { hintWobble(live()); } },
+  boopPage('Hello, little dot. Give it a boop.', 1),
+  boopPage('Oh! A friend. One more boop.', 2),
+  tickleOnce('Tickle this one. Round and round.', 0, 'red', ['yellow', 'yellow', 'yellow']),
+  tickleOnce('Hee hee! It went red. Now tickle the last one.', 2, 'blue', ['red', 'yellow', 'yellow']),
+  fillPage,
+  wigglePage,
+  leanPage('Tip it to the left. Wheee!', -1),
+  leanPage('Now all the way over to the right.', 1),
+  huntPage('Can you find every blue one? Boop it away!', 'blue'),
+  huntPage('Now every red one.', 'red'),
+  mixPage('Slide the blue one onto the yellow one.', 'blue', 'yellow', 'Look! Green!'),
+  mixPage('Now slide the red one onto the blue one.', 'red', 'blue', 'Purple! Who knew?'),
+  mixPage('And the yellow one onto the red one.', 'yellow', 'red', 'Orange! You are a painter.'),
+  nightPage, singPage, clapPage, popPage, endPage, playPage
+];
+
+function go(i) {
+  if (page && page.exit) page.exit();
+  page = pages[i]; pageIndex = i; pageT = 0; idleT = 0; timers = [];
+  $('next').hidden = true;
+  $('caption').textContent = '';
+  $('cover').hidden = !page.cover; $('start').hidden = !page.cover;
+  if (page.text) $('caption').textContent = page.text;
+  if (page.enter) page.enter();
+}
+let pageIndex = 0, started = false;
+function next(delay = 0) { const i = pageIndex; timers.push({ t: delay, fn: () => { if (pageIndex === i) go((i + 1) % pages.length); } }); }
+
+/* ---------- touch ---------- */
+const pointers = new Map();
+function hit(x, y) {
+  const ds = live();
+  for (let i = ds.length - 1; i >= 0; i--) {
+    const d = ds[i];
+    if (hypot(d.x - x, d.y - y) < Math.max(d.r * 1.12, 34)) return d;
+  }
+  return null;
+}
+canvas.addEventListener('pointerdown', e => {
+  audio.init(); idleT = 0; reviveMic();
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* finger already lifted */ }
+  const d = hit(e.clientX, e.clientY);
+  pointers.set(e.pointerId, { dot: d, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: performance.now(), moved: 0 });
+  if (d) {
+    squish(d); audio.note(d.color);
+    if (page.drag === true || d.free) { d.held++; d.vx = d.vy = 0; }
+  }
+});
+canvas.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  idleT = 0;
+  const dist = hypot(e.clientX - p.x, e.clientY - p.y); p.moved += dist;
+  if (typeof page.drag === 'function') page.drag(p.x, p.y, e.clientX, e.clientY);
+  const d = p.dot;
+  if (d && d.held) {
+    d.vx = (e.clientX - p.x) * 30; d.vy = (e.clientY - p.y) * 30;
+    d.x = e.clientX; d.y = e.clientY; d.hx = d.x; d.hy = d.y;
+  } else if (page.rub) {
+    const over = hit(e.clientX, e.clientY);
+    if (over) page.rub(over, dist);
+  }
+  p.x = e.clientX; p.y = e.clientY;
+});
+function endPointer(e) {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  pointers.delete(e.pointerId);
+  if (p.dot && p.dot.held) p.dot.held--;
+  if (p.moved < 14 && performance.now() - p.t < 650 && page.tap) page.tap(p.dot && !p.dot.dead ? p.dot : null, e.clientX, e.clientY);
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', e => { const p = pointers.get(e.pointerId); if (p && p.dot && p.dot.held) p.dot.held--; pointers.delete(e.pointerId); });
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+// Sensor permission prompts on iPhone and iPad only open from a real click, so the cover is one big button.
+$('start').addEventListener('click', () => {
+  audio.init();
+  if (started) { $('start').hidden = true; audio.plop(); go(1); return; }
+  started = true;
+  const asks = [];
+  if (window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) asks.push(DeviceOrientationEvent.requestPermission().catch(() => 'denied'));
+  if (window.DeviceMotionEvent && DeviceMotionEvent.requestPermission) asks.push(DeviceMotionEvent.requestPermission().catch(() => 'denied'));
+  $('start').hidden = true;
+  Promise.all(asks).then(() => { sense.listen(); return openMic(); }).finally(() => {
+    if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {});
+    audio.plop();
+    go(1);
+  });
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (audio.ctx && audio.ctx.state !== 'running') audio.ctx.resume().catch(() => {});
+  setTimeout(reviveMic, 600);
+  if (navigator.wakeLock && pageIndex) navigator.wakeLock.request('screen').catch(() => {});
+});
+$('sound').addEventListener('click', () => {
+  audio.on = !audio.on;
+  $('wave').toggleAttribute('hidden', !audio.on); $('mute').toggleAttribute('hidden', audio.on);
+  $('sound').setAttribute('aria-label', audio.on ? 'Turn sound off' : 'Turn sound on');
+});
+$('next').addEventListener('click', () => {
+  audio.init();
+  if (page === playPage) go(0); else go((pageIndex + 1) % pages.length);
+});
+
+/* Keyboard stands in for the sensors on a computer: arrows tip, S wiggles, C claps, hold B to blow, hold V to sing. */
+const keysHeld = {};
+window.addEventListener('keydown', e => {
+  sense.keys[e.key] = true; keysHeld[e.code] = true;
+  if (e.repeat) return;
+  if (e.code === 'KeyS') triggerShake();
+  if (e.code === 'KeyC') triggerClap();
+});
+window.addEventListener('keyup', e => { sense.keys[e.key] = false; keysHeld[e.code] = false; });
+function triggerShake() {
+  if (!page || page.cover) return;
+  audio.rattle();
+  live().forEach(d => { d.wob = .35; });
+  if (page.shake) page.shake();
+}
+function triggerClap() { if (page && page.clap) page.clap(); }
+sense.onShake = triggerShake;
+ear.onClap = triggerClap;
+
+/* ---------- loop ---------- */
+let lastT = 0;
+function frame(now) {
+  requestAnimationFrame(frame); // Booked first, so one bad frame can never freeze the game for good.
+  const dt = Math.min(1 / 30, (now - lastT) / 1000 || 1 / 60); lastT = now;
+  pageT += dt; idleT += dt;
+  for (const t of timers) { t.t -= dt; }
+  const due = timers.filter(t => t.t <= 0); timers = timers.filter(t => t.t > 0);
+  due.forEach(t => t.fn());
+  ear.update(now);
+  if (page && page.tick) page.tick(dt);
+  if (page) {
+    // The black fades smoothly over the last stretch of blowing, not all at once at the end.
+    const clearing = clamp((scraped - .7) / .3, 0, 1);
+    const wantDark = page.night ? 1 - clearing * clearing * (3 - 2 * clearing) : 0;
+    nightAlpha += (wantDark - nightAlpha) * Math.min(1, dt * 3);
+    if (page.arrow && pageT > page.arrow && !page.done && $('next').hidden) $('next').hidden = false;
+  }
+  if (sense.jolt > 4 && live().some(d => d.free)) {
+    for (const d of live()) if (d.free) { d.vx += rand(-1, 1) * sense.jolt * U * .02; d.vy += rand(-1, 1) * sense.jolt * U * .02; }
+  }
+  sense.jolt *= .6;
+  step(dt);
+  draw(now);
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+resize();
+go(0);
+for (let i = 0; i < 40; i++) step(1 / 60);
+draw(0);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (page && page.layout) page.layout(); });
+requestAnimationFrame(frame);
+
+try {
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+} catch (e) { /* offline play is a bonus; the game runs without it */ }
+window.boop = { ear, sense, audio, go, get page() { return page; }, get index() { return pageIndex; }, get dots() { return dots; }, get scraped() { return scraped; }, pages };
+</script>
+</body>
+</html>

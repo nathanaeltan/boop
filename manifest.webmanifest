@@ -1,0 +1,14 @@
+{
+  "name": "Boop the Dot",
+  "short_name": "Boop",
+  "description": "Tap, tilt, clap at and blow on painted dots.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#FBFAF6",
+  "theme_color": "#FBFAF6",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
