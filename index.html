@@ -707,7 +707,7 @@ function mixPage(text, moved, target, reward) {
   };
 }
 const nightPage = {
-  text: 'Uh-oh. Who turned out the light? Huff and puff at the arrows to blow the dark away!', night: true, arrow: 16,
+  text: 'Uh-oh. Who turned out the light? Huff and puff at the arrows to blow the dark away!', night: true, arrow: 28,
   enter() {
     scraped = 0; this.wind = 0; this.scratchDebt = 0; this.gusts = []; this.gustDebt = 0; buildDark(); this.done = false; this.layout();
     document.body.classList.add('night');
@@ -735,7 +735,7 @@ const nightPage = {
     const push = Math.max(ear.blow, ear.level * .35, keysHeld.KeyB ? .9 : 0);
     this.wind += (push - this.wind) * Math.min(1, dt * (push > this.wind ? 9 : 2.5));
     if (this.wind > .01) {
-      scraped += this.wind * dt / 2.6;
+      scraped += this.wind * dt / 5.5;
       this.scratchDebt += this.wind * dt * 240;
       const scratches = Math.min(10, Math.floor(this.scratchDebt));
       this.scratchDebt -= scratches;
@@ -780,7 +780,7 @@ const nightPage = {
   exit() { document.body.classList.remove('night'); }
 };
 const singPage = {
-  text: 'Good morning! Sing right at the sun and help it grow. Laaaa!', arrow: 16,
+  text: 'Good morning! Sing right at the sun and help it grow. Laaaa!', arrow: 28,
   enter() {
     this.grow = 0; this.done = false; this.waves = []; this.waveDebt = 0; this.singing = 0; this.layout();
   },
@@ -801,7 +801,7 @@ const singPage = {
     const held = pointers.size > 0 && (!ear.live || pageT > 8);
     const sing = Math.max(ear.level, keysHeld.KeyV ? .8 : 0, held ? .6 : 0);
     this.singing += (sing - this.singing) * Math.min(1, dt * 6);
-    this.grow = clamp(this.grow + (sing > 0 ? sing * dt / 2.4 : -dt * .04), 0, 1);
+    this.grow = clamp(this.grow + (sing > 0 ? sing * dt / 5 : -dt * .04), 0, 1);
     this.sun.tr = U * .09 + (this.max - U * .09) * this.grow;
     const p = this.place(this.sun.tr);
     this.sun.hx = p.x; this.sun.hy = p.y;
@@ -826,21 +826,21 @@ const singPage = {
     if (!this.done) drawMicHint('#17171A', clamp(1 - this.singing * 3, 0, 1) * clamp(1 - this.grow * 3, 0, 1) * .8, hypot(micSpot().x - this.sun.x, micSpot().y - this.sun.y) + this.sun.r + U * .02);
   }
 };
-const CLAP_WORDS = ['Clap!', 'Again!', 'One more!', 'Bigger! Keep going!', 'Louder!'];
+const CLAP_WORDS = ['Clap!', 'Again!', 'Keep going!', 'More!', 'Bigger!', 'Louder!', 'Clap, clap, clap!', 'They are growing!', 'Keep clapping!', 'So big!', 'Almost!', 'One more!'];
 const clapPage = {
-  text: 'The dots love a party. Clap your hands!', arrow: 18,
+  text: 'The dots love a party. Clap your hands!', arrow: 30,
   enter() { this.n = 0; this.done = false; this.layout(); },
   layout() {
-    const R = .06 * Math.pow(1.3, this.n);
+    const R = .06 * Math.pow(1.3, this.n * 5 / CLAP_WORDS.length);
     this.ds = arrange(scatterSpecs(['red', 'yellow', 'blue', 'blue', 'red', 'yellow', 'yellow', 'red', 'blue'], R, 9));
   },
   clap() {
     if (this.done) return;
     this.n++;
-    if (this.n >= 5) audio.cheer(); else audio.clapTone(this.n - 1);
+    if (this.n >= CLAP_WORDS.length) audio.cheer(); else audio.clapTone(this.n - 1);
     for (const d of live()) { d.vy -= U * 2.2 * rand(.7, 1.2); d.vx += rand(-1, 1) * U * .6; squish(d, 1.2); }
     this.layout();
-    if (this.n >= 5) { this.done = true; next(1.2); }
+    if (this.n >= CLAP_WORDS.length) { this.done = true; next(1.2); }
     else say(CLAP_WORDS[this.n]);
   },
   tap(d) { if (d && (!ear.live || pageT > 12)) this.clap(); }
