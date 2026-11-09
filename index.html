@@ -247,8 +247,11 @@ const audio = {
     if (!AC) return;
     if (!this.ctx) {
       this.ctx = new AC();
-      this.master = this.ctx.createGain(); this.master.gain.value = .9;
-      this.master.connect(this.ctx.destination);
+      // iPads play quietly while the mic is on, so everything is boosted, and a limiter stops the loud moments from crackling.
+      this.master = this.ctx.createGain(); this.master.gain.value = 2.4;
+      const limit = this.ctx.createDynamicsCompressor();
+      limit.threshold.value = -10; limit.knee.value = 8; limit.ratio.value = 8; limit.attack.value = .003; limit.release.value = .15;
+      this.master.connect(limit); limit.connect(this.ctx.destination);
     }
     if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   },
@@ -290,6 +293,7 @@ const audio = {
 const ear = {
   live: false, an: null, level: 0, blow: 0, voice: 0, sustain: 0, floor: .005, avg: .005,
   flat: 0, cand: null, refractory: 0, onClap: null, rms: 0, last: 0,
+  power: 0, noise: false, boomAt: 0, pitch: 0, wantPitch: false, quiet: .005,
   attach(source, ctx) {
     if (this.an) this.an.disconnect();
     this.source = source;
@@ -302,10 +306,31 @@ const ear = {
     this.td = new Float32Array(this.an.fftSize);
     this.fd = new Float32Array(this.an.frequencyBinCount);
     this.hz = ctx.sampleRate / this.an.fftSize;
+    this.sr = ctx.sampleRate;
+    this.yin = new Float32Array(Math.ceil(this.sr / 90) + 2);
     this.live = true;
   },
+  // The note being sung, in Hz, or 0 if there is no clear one. This is the YIN method: find the shortest delay at which the
+  // sound lines up with itself.
+  findPitch() {
+    const x = this.td, N = 1024, d = this.yin, minLag = Math.floor(this.sr / 1100), maxLag = Math.min(d.length - 2, x.length - N - 1);
+    let run = 0;
+    for (let lag = 1; lag <= maxLag; lag++) {
+      let s = 0;
+      for (let i = 0; i < N; i++) { const v = x[i] - x[i + lag]; s += v * v; }
+      run += s; d[lag] = run ? s * lag / run : 1;
+    }
+    for (let lag = minLag; lag < maxLag; lag++) {
+      if (d[lag] >= .15) continue;
+      while (lag + 1 < maxLag && d[lag + 1] < d[lag]) lag++;
+      const a = d[lag - 1], b = d[lag], c = d[lag + 1], bend = a - 2 * b + c;
+      return this.sr / (lag + (bend ? clamp((a - c) / (2 * bend), -1, 1) : 0));
+    }
+    return 0;
+  },
   update(now) {
-    this.level = this.blow = this.voice = 0;
+    this.level = this.blow = this.voice = this.power = this.pitch = 0;
+    this.noise = false;
     if (!this.an) return;
     const dt = Math.min(.1, (now - this.last) / 1000 || .016); this.last = now;
     this.an.getFloatTimeDomainData(this.td);
@@ -330,6 +355,18 @@ const ear = {
     this.floor += (rms - this.floor) * (rms < this.floor ? .03 : .0005);
     this.floor = clamp(this.floor, .0003, .08);
 
+    // The room's quiet level for loudness. Unlike the floor it barely moves during a long roar or chatter, so neither
+    // fades into "quiet" on the pages that measure how loud or how quiet the children are.
+    this.quiet += (rms - this.quiet) * (rms < this.quiet * 2 ? .02 : .00005);
+    this.quiet = clamp(this.quiet, .0003, .08);
+    // How far above that this is, in decibels: a calm room is near 0. The iPad's mic is quiet, with claps only about 10 above
+    // the room, so a shout is taken to be about 24.
+    const db = 20 * Math.log10(Math.max(rms, 1e-7) / Math.max(this.quiet, .0004));
+    this.power = clamp((db - 6) / 18, 0, 1);
+    this.noise = rms > Math.max(.0025, this.quiet * 4);
+    // A sudden loud sound, for the Boo! page: much louder than a moment ago. Claps count too, which is fine there.
+    if (db > 12 && rms > this.avg * 2.5 && now > this.boomAt + 600) this.boomAt = now;
+
     // Clap: a sudden jump that has mostly died away under a tenth of a second later. On an iPad claps measured about .004 to
     // .006 and were bass-heavy, but a bump from holding it is almost nothing but bass, and that is how the two differ.
     if (this.cand) {
@@ -352,6 +389,7 @@ const ear = {
       this.level = clamp((rms - this.floor * 1.5) / .005, .1, 1);
       if (this.lowShare > .7 || this.flat > .22) this.blow = this.level;
       else this.voice = this.level;
+      if (this.wantPitch) this.pitch = this.findPitch();
     }
   }
 };
@@ -522,6 +560,7 @@ function draw(now) {
   ctx.drawImage(paper, 0, 0);
   if (nightAlpha > .01) { ctx.globalAlpha = nightAlpha; ctx.drawImage(dark, 0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1; }
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  if (page && page.drawUnder) page.drawUnder();
   // Paint is see-through on paper, so overlaps mix. On the black page it has to sit on top instead.
   ctx.globalCompositeOperation = nightAlpha > .02 ? 'source-over' : 'multiply';
   for (const f of flecks) drawSprite(f.spr, f.x, f.y, f.r, 0, 1, 1, clamp(f.life * 1.6, 0, 1));
@@ -856,27 +895,36 @@ const popPage = {
     if (!live().length) { this.done = true; audio.cheer(); next(.9); }
   }
 };
-const endPage = {
-  text: 'Ta-da! All gone. What now?',
-  enter() { this.layout(); },
-  layout() {
-    const A = area(), wide = A.w > A.h * .9;
-    [this.again, this.play] = arrange([
-      { color: 'yellow', x: A.w * (wide ? .32 : .5), y: A.y + A.h * (wide ? .46 : .28), r: U * .11 },
-      { color: 'blue', x: A.w * (wide ? .68 : .5), y: A.y + A.h * (wide ? .46 : .68), r: U * .11 }]);
-  },
-  tap(d) {
-    if (d === this.again) { audio.plop(); go(1); }
-    if (d === this.play) { audio.plop(); go(pages.indexOf(playPage)); }
-  },
-  drawOver() {
-    ctx.fillStyle = '#17171A'; ctx.textAlign = 'center';
-    ctx.font = `${Math.round(clamp(U * .036, 17, 30))}px ${getComputedStyle(document.documentElement).getPropertyValue('--hand')}`;
-    for (const [d, t] of [[this.again, 'START OVER'], [this.play, 'PLAY']]) {
-      if (d && !d.dead) ctx.fillText(t, d.x, d.y + d.r + U * .055);
+let HAND = '';
+function handFont(px) {
+  HAND = HAND || getComputedStyle(document.documentElement).getPropertyValue('--hand');
+  return `${Math.round(px)}px ${HAND}`;
+}
+// A choice of where to go next: each choice is [label, colour, the page it opens].
+function endPage(text, choices) {
+  return {
+    text,
+    enter() { this.layout(); },
+    layout() {
+      const A = area(), wide = A.w > A.h * .9, n = choices.length;
+      this.ds = arrange(choices.map(([, color], i) => wide
+        ? { color, x: A.w * (i + 1) / (n + 1), y: A.y + A.h * .44, r: U * .1 }
+        : { color, x: A.w / 2, y: A.y + A.h * (i + .4) / n, r: U * .085 }));
+    },
+    tap(d) {
+      const i = this.ds.indexOf(d);
+      if (i >= 0) { audio.plop(); go(pages.indexOf(choices[i][2]())); }
+    },
+    drawOver() {
+      ctx.fillStyle = '#17171A'; ctx.textAlign = 'center'; ctx.font = handFont(clamp(U * .036, 17, 30));
+      this.ds.forEach((d, i) => { if (!d.dead) ctx.fillText(choices[i][0], d.x, d.y + d.r + U * .055); });
     }
-  }
-};
+  };
+}
+const bookOneEnd = endPage('Ta-da! All gone. What now?', [
+  ['KEEP GOING', 'red', () => bookTwo[0]], ['START OVER', 'yellow', () => pages[1]], ['PLAY', 'blue', () => playPage]]);
+const bookTwoEnd = endPage('The end of book two! You are a dot expert. What now?', [
+  ['BOOK TWO AGAIN', 'red', () => bookTwo[0]], ['BOOK ONE', 'yellow', () => pages[1]], ['PLAY', 'blue', () => playPage]]);
 const playPage = {
   text: 'Your turn! Tap to add dots. Tip, wiggle, clap and blow.', drag: true,
   enter() { this.c = 0; this.t = 0; live().forEach(d => { d.free = true; }); },
@@ -899,6 +947,428 @@ const playPage = {
   nextTo: 0
 };
 
+/* ---------- book two ---------- */
+// A pen circle, optionally washed with paint, for places a dot should go.
+function ring(x, y, r, color, alpha = 1, fill = 0) {
+  ctx.save();
+  if (fill) { ctx.globalAlpha = fill; ctx.fillStyle = PAINT[color]; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); }
+  ctx.globalAlpha = alpha; ctx.strokeStyle = '#17171A'; ctx.lineWidth = U * .006;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+  ctx.restore();
+}
+function confetti(x, y, n, speed = 1) {
+  for (let i = 0; i < n; i++) {
+    const color = pick(COLORS), a = rand(TAU), v = U * rand(.4, 1.6) * speed;
+    flecks.push({ color, spr: pick(SPRITES[color]), x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, r: U * rand(.008, .022), life: rand(.7, 1.3) });
+  }
+  if (flecks.length > 160) flecks.splice(0, flecks.length - 160);
+}
+const bookTwoStart = {
+  text: 'Book two! Ready for more? Boop the big red dot.', arrow: 12,
+  enter() { this.done = false; this.layout(); },
+  layout() { const A = area(); [this.d] = arrange([{ color: 'red', x: A.w / 2, y: A.y + A.h / 2, r: U * .13 }]); },
+  tick() { hintWobble([this.d]); },
+  tap(d) { if (!d || this.done) return; this.done = true; squish(d, 2); audio.cheer(); next(.9); }
+};
+const trailPage = {
+  text: 'Draw with your finger and leave a trail of little dots!', arrow: 25,
+  enter() { this.done = false; this.n = 0; this.last = null; arrange([]); },
+  layout() {},
+  drag(x0, y0, x1, y1) {
+    if (this.done) return;
+    const gap = U * .045;
+    if (!this.last || hypot(this.last.x - x0, this.last.y - y0) > gap * 2) { this.last = { x: x0, y: y0 }; this.place(x0, y0); }
+    for (let q = hypot(x1 - this.last.x, y1 - this.last.y); q >= gap && !this.done; q -= gap) {
+      const k = gap / q;
+      this.last = { x: this.last.x + (x1 - this.last.x) * k, y: this.last.y + (y1 - this.last.y) * k };
+      this.place(this.last.x, this.last.y);
+    }
+  },
+  tap(d, x, y) { if (!d) this.place(x, y); },
+  place(x, y) {
+    if (this.done) return;
+    const color = COLORS[Math.floor(this.n++ / 5) % 3];
+    dots.push(makeDot(color, x, y, U * rand(.018, .03)));
+    if (this.n % 3 === 0) audio.note(color);
+    if (this.n >= 60) { this.done = true; audio.cheer(); say('What a beautiful painting!'); next(2.4); }
+  }
+};
+const roarPage = {
+  text: 'The dots are all squished together. Give a great big ROAR!', arrow: 30,
+  enter() { this.done = false; this.blast = 0; this.power = 0; this.layout(); },
+  layout() {
+    this.angles = Array.from({ length: 10 }, (_, i) => i / 10 * TAU + .3);
+    this.ds = arrange(this.angles.map((a, i) => ({ color: COLORS[i % 3], ...this.spot(a), r: U * .055 })));
+  },
+  // Huddled in the middle at first, then pushed out towards the edge of the page as the roaring adds up.
+  spot(a) {
+    const A = area(), r = U * .06, c = Math.cos(a), s = Math.sin(a);
+    const edge = Math.min(Math.abs(c) > .01 ? (A.w / 2 - r) / Math.abs(c) : 1e9, Math.abs(s) > .01 ? (A.h / 2 - r) / Math.abs(s) : 1e9);
+    const reach = U * .085 + (edge - U * .085) * this.blast;
+    return { x: A.w / 2 + c * reach, y: A.y + A.h / 2 + s * reach };
+  },
+  tick(dt) {
+    if (this.done) return;
+    const held = pointers.size > 0 && (!ear.live || pageT > 10);
+    const raw = Math.max(ear.power, keysHeld.KeyR ? .95 : 0, held ? .5 : 0);
+    this.power += (raw - this.power) * Math.min(1, dt * (raw > this.power ? 14 : 4));
+    // Louder counts for far more, so a real roar sends them flying and chatter barely moves them.
+    this.blast = clamp(this.blast + this.power * this.power * dt / 1.8, 0, 1);
+    this.ds.forEach((d, i) => {
+      const p = this.spot(this.angles[i]); d.hx = p.x; d.hy = p.y;
+      if (this.power > .05) { d.vx += rand(-1, 1) * U * 30 * this.power * dt; d.vy += rand(-1, 1) * U * 30 * this.power * dt; d.wob = .15; }
+    });
+    if (this.blast >= 1) { this.done = true; audio.cheer(); say('WOW! What a ROAR!'); next(2); }
+  },
+  drawOver() {
+    if (this.done) return;
+    if (this.power < .05) { drawMicHint('#17171A', .7); return; }
+    const m = micSpot(), inward = Math.atan2(-m.uy, -m.ux);
+    ctx.save();
+    ctx.strokeStyle = '#17171A'; ctx.lineCap = 'round'; ctx.lineWidth = U * .006; ctx.globalAlpha = .4 + .5 * this.power;
+    for (let i = 0; i < 7; i++) {
+      const a = inward + (i - 3) * .22, r0 = U * .05, r1 = r0 + U * (.04 + .12 * this.power) * (.8 + .4 * Math.sin(pageT * 30 + i));
+      ctx.beginPath(); ctx.moveTo(m.x + Math.cos(a) * r0, m.y + Math.sin(a) * r0); ctx.lineTo(m.x + Math.cos(a) * r1, m.y + Math.sin(a) * r1); ctx.stroke();
+    }
+    ctx.restore();
+  }
+};
+const sleepyPage = {
+  text: 'Shh... the dots are sleepy. Be very, very quiet.', arrow: 35,
+  enter() { this.done = false; this.sleep = 0; this.noisy = 0; this.awake = 0; this.zs = []; this.zDebt = 0; this.said = false; this.layout(); },
+  layout() {
+    const pos = row(4, .08, .55);
+    this.specs = ['blue', 'red', 'yellow', 'blue'].map((color, i) => ({ color, ...pos(i) }));
+    this.ds = arrange(this.specs);
+  },
+  tick(dt) {
+    for (const z of this.zs) { z.t += dt; z.y -= U * .06 * dt; z.x += Math.sin(z.t * 2.5) * U * .02 * dt; }
+    this.zs = this.zs.filter(z => z.t < 2.6);
+    if (this.done) return;
+    // A touch counts as noise too, so the page still works without a mic.
+    const loud = ear.noise || pointers.size > 0 || keysHeld.KeyV;
+    this.noisy = loud ? this.noisy + dt : 0;
+    if (this.awake > 0) this.awake -= dt;
+    else if (this.noisy > .1 && this.sleep > .1) {
+      this.sleep *= .35; this.awake = 1.2;
+      for (const d of this.ds) { d.vy -= U * rand(2, 3.2); squish(d, 1.5); d.wob = .4; }
+      audio.plop(); say('Oops, you woke them up! Shhh...');
+    } else if (!loud) this.sleep = Math.min(1, this.sleep + dt / 6);
+    this.ds.forEach((d, i) => { d.hy = this.specs[i].y + this.sleep * U * .05; });
+    this.zDebt += dt * this.sleep * 1.4;
+    for (; this.zDebt >= 1; this.zDebt--) {
+      const d = pick(this.ds);
+      this.zs.push({ x: d.x + d.r * .6, y: d.y - d.r * .7, t: 0, size: U * rand(.03, .05) });
+    }
+    if (this.sleep > .5 && !this.said) { this.said = true; say('They are falling asleep... shhh...'); }
+    if (this.sleep >= 1) {
+      this.done = true; say('Night night, dots.');
+      audio.tone(261.6, 1.4, .12); audio.tone(196, 1.8, .1, 'sine', .5);
+      next(3.2);
+    }
+  },
+  drawOver() {
+    ctx.save(); ctx.fillStyle = '#17171A'; ctx.textAlign = 'center';
+    for (const z of this.zs) {
+      ctx.globalAlpha = clamp(Math.min(z.t * 3, 2.6 - z.t), 0, 1) * .8; ctx.font = handFont(z.size);
+      ctx.fillText('z', z.x, z.y);
+    }
+    ctx.restore();
+  }
+};
+const feedPage = {
+  text: 'The big dot is hungry! Slide the little dots into it.', arrow: 35, drag: true,
+  enter() { this.done = false; this.eaten = 0; this.layout(); },
+  layout() {
+    const A = area(), cx = A.w / 2, cy = A.y + A.h / 2, reach = Math.min(A.w, A.h) * .4;
+    const specs = [{ color: 'blue', x: cx, y: cy, r: this.bigR() }];
+    for (let i = 0; i < 8 - this.eaten; i++) {
+      const a = i / 8 * TAU - Math.PI / 2;
+      specs.push({ color: ['red', 'yellow'][i % 2], x: cx + Math.cos(a) * reach, y: cy + Math.sin(a) * reach, r: U * .045 });
+    }
+    [this.big, ...this.little] = arrange(specs);
+  },
+  bigR() { return U * (.09 + this.eaten * .016); },
+  tick() {
+    if (this.done || !this.big) return;
+    hintWobble(this.little);
+    for (const d of this.little) {
+      if (d.dead || hypot(d.x - this.big.x, d.y - this.big.y) > this.big.r * .8) continue;
+      // Slurped: let go of the finger and shrink away into the middle of the big dot.
+      d.dead = true; d.tr = 0; d.held = 0; d.hx = this.big.x; d.hy = this.big.y;
+      this.eaten++; this.big.tr = this.bigR(); squish(this.big, 1.6); this.big.wob = .3;
+      audio.tone(330, .12, .3); audio.tone(196, .2, .3, 'sine', .08);
+      if (this.eaten < 8) continue;
+      this.done = true; say('Mmm! All full up. Hic!');
+      for (const t of [.5, 1.1, 1.7]) after(t, () => { this.big.vy -= U * 3; squish(this.big, 2); audio.tone(740, .08, .25, 'triangle'); });
+      next(2.8);
+    }
+  }
+};
+const balloonPage = {
+  text: 'Hum a long "mmmm" to blow up the balloon. Keep going!', arrow: 40,
+  enter() { this.done = false; this.k = 0; this.fill = 0; this.hum = 0; this.layout(); },
+  layout() {
+    const A = area();
+    this.cx = A.w / 2; this.cy = A.y + A.h * .42; this.max = Math.min(A.w, A.h) * .34; this.foot = A.y + A.h * .96;
+    [this.b] = this.done ? [null] : arrange([{ color: COLORS[this.k % 3], x: this.cx, y: this.cy, r: this.size() }]);
+  },
+  size() { return U * .05 + (this.max - U * .05) * this.fill; },
+  tick(dt) {
+    if (this.done || !this.b) return;
+    const held = pointers.size > 0 && (!ear.live || pageT > 10);
+    this.hum = Math.max(ear.level, keysHeld.KeyV ? .8 : 0, held ? .6 : 0);
+    this.fill = clamp(this.fill + (this.hum > 0 ? this.hum * dt / 3.5 : -dt * .05), 0, 1);
+    this.b.tr = this.size();
+    if (this.hum > 0) this.b.wob = .1;
+    if (this.fill < 1) return;
+    popDot(this.b); confetti(this.b.x, this.b.y, 40);
+    this.k++; this.fill = 0;
+    if (this.k >= 3) { this.done = true; this.b = null; audio.cheer(); say('Pop, pop, POP! Hooray!'); next(2.2); return; }
+    say(this.k === 1 ? 'POP! Here comes another one. Hummm...' : 'One more balloon! Hummm...');
+    this.layout();
+  },
+  drawUnder() {
+    const b = this.b; if (!b || b.dead) return;
+    const tie = b.y + b.r * .95;
+    ctx.save(); ctx.strokeStyle = '#17171A'; ctx.lineWidth = U * .004; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(b.x, tie);
+    ctx.bezierCurveTo(b.x - U * .04, tie + (this.foot - tie) * .35, b.x + U * .04, tie + (this.foot - tie) * .65, this.cx + Math.sin(pageT * 2) * U * .01, this.foot);
+    ctx.stroke(); ctx.restore();
+  },
+  drawOver() { if (!this.done && !this.hum) drawMicHint('#17171A', .7); }
+};
+const homePage = {
+  text: 'Hold it flat and tip it. Roll each dot into its own circle!', arrow: 35, motion: true,
+  enter() {
+    this.done = false; this.home = {}; this.layout();
+    // Free dots do not travel to a new place by themselves, so they start in the middle instead of wherever the last page left them.
+    this.ds.forEach(d => { d.x = d.hx; d.y = d.hy; d.vx = d.vy = 0; });
+  },
+  layout() {
+    const A = area(), wide = A.w > A.h;
+    const spots = wide ? [[.15, .25], [.85, .3], [.5, .8]] : [[.22, .15], [.78, .45], [.25, .85]];
+    this.holes = COLORS.map((color, i) => ({ color, x: A.w * spots[i][0], y: A.y + A.h * spots[i][1], r: U * .1 }));
+    this.ds = arrange(this.holes.map((h, i) => this.home[h.color]
+      ? { color: h.color, x: h.x, y: h.y, r: U * .06 }
+      : { color: h.color, x: A.w * (.4 + i * .1), y: A.y + A.h * .5, r: U * .06 }));
+    this.ds.forEach(d => { d.free = !this.home[d.color]; });
+  },
+  tick() {
+    if (this.done) return;
+    for (const h of this.holes) {
+      const d = this.ds.find(o => o.color === h.color && !o.dead);
+      if (!d || this.home[h.color] || hypot(d.x - h.x, d.y - h.y) > h.r * .7) continue;
+      this.home[h.color] = true; d.free = false; d.hx = h.x; d.hy = h.y; squish(d, 1.4); audio.note(h.color);
+      if (COLORS.every(c => this.home[c])) { this.done = true; audio.cheer(); say('Everyone is home!'); next(1.6); }
+    }
+  },
+  drawUnder() { for (const h of this.holes || []) ring(h.x, h.y, h.r, h.color, .8, this.home[h.color] ? 0 : .18); }
+};
+const NUMBER_WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five'];
+const copyPage = {
+  text: 'Watch the dots bounce, then clap the same number!', arrow: 45,
+  enter() { this.done = false; this.round = 0; this.misses = 0; this.show(); },
+  layout() {
+    const pos = row(this.n, .075);
+    this.ds = arrange(Array.from({ length: this.n }, (_, i) => ({ color: i < this.heard ? 'red' : 'yellow', ...pos(i) })));
+  },
+  // The dots bounce the number to copy, one note each, then it is the child's turn.
+  show() {
+    this.n = [2, 3, 4][this.round]; this.heard = 0; this.state = 'show';
+    for (const d of live()) if (d.color === 'red') { setColor(d, 'yellow'); d.settle = true; }
+    this.layout();
+    for (let i = 0; i < this.n; i++) after(1 + i * .6, () => { const d = this.ds[i]; if (d) { d.vy -= U * 2.4; squish(d, 1.3); } audio.clapTone(i); });
+    after(1.2 + this.n * .6, () => { this.state = 'listen'; this.lastClap = pageT; say('Your turn!'); });
+  },
+  clap() {
+    if (this.done || this.state !== 'listen') return;
+    const d = this.ds[this.heard++];
+    if (d) { setColor(d, 'red'); d.settle = true; d.vy -= U * 2.4; squish(d, 1.3); }
+    audio.clapTone(this.heard - 1);
+    this.lastClap = pageT;
+  },
+  tick() {
+    if (this.done || this.state !== 'listen' || !this.heard || pageT - this.lastClap < 1.4) return;
+    this.state = 'wait';
+    // Small children miscount, so a second miss in a row still counts as a win.
+    if (this.heard === this.n || ++this.misses >= 2) {
+      this.misses = 0; this.round++; audio.cheer();
+      if (this.round >= 3) { this.done = true; say('You copied them all!'); next(1.8); return; }
+      say(`Yes! ${NUMBER_WORDS[this.n]}! Now watch again...`);
+    } else say(this.heard < this.n ? 'Not quite. Watch again!' : 'Too many! Watch again!');
+    after(1.6, () => this.show());
+  },
+  tap() { if (!ear.live || pageT > 15) this.clap(); }
+};
+const stretchPage = {
+  text: 'Put two fingers on the dot and stretch it BIG!', arrow: 30,
+  enter() { this.done = false; this.goal = 'big'; this.pinch = null; this.step = undefined; this.d = null; this.layout(); },
+  layout() {
+    const A = area(); this.max = Math.min(A.w, A.h) * .42;
+    [this.d] = arrange([{ color: 'yellow', x: A.w / 2, y: A.y + A.h / 2, r: this.d && !this.d.dead ? this.d.tr : U * .12 }]);
+  },
+  tick(dt) {
+    const d = this.d; if (this.done || !d) return;
+    const ps = [...pointers.values()];
+    if (ps.length >= 2) {
+      const span = Math.max(1, hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y));
+      if (!this.pinch) this.pinch = { span, r: d.tr };
+      d.tr = this.pinch.r * span / this.pinch.span;
+    } else {
+      this.pinch = null;
+      // After a while one finger works too, for hands that cannot manage two yet: drag out to grow it, in to shrink it.
+      if (ps.length === 1 && pageT > 12) {
+        const reach = hypot(ps[0].x - d.x, ps[0].y - d.y);
+        d.tr = this.goal === 'big' ? Math.max(d.tr, reach) : Math.min(d.tr, reach);
+      }
+    }
+    if (keysHeld.KeyG) d.tr += U * .3 * dt;
+    if (keysHeld.KeyK) d.tr -= U * .3 * dt;
+    d.tr = clamp(d.tr, U * .03, this.max);
+    const step = Math.round(d.tr / (U * .03));
+    if (step !== this.step) { if (this.step !== undefined) audio.tone(160 + step * 45, .08, .2, 'triangle'); this.step = step; }
+    if (this.goal === 'big' && d.tr >= this.max * .95) {
+      this.goal = 'small'; this.pinch = null; d.wob = .4; audio.cheer(); say('Wow, HUGE! Now pinch it small, small, small.');
+    } else if (this.goal === 'small' && d.tr <= U * .045) {
+      this.done = true; audio.cheer(); say('Teeny tiny! Well done.'); next(2);
+    }
+  }
+};
+const countPage = {
+  text: 'Clap three times to fill the three circles!', arrow: 40,
+  enter() { this.done = false; this.round = 0; this.filled = 0; this.n = 3; this.layout(); },
+  layout() {
+    const pos = row(this.n, .07);
+    this.spots = Array.from({ length: this.n }, (_, i) => ({ color: COLORS[i % 3], ...pos(i) }));
+    this.ds = arrange(this.spots.slice(0, this.filled));
+  },
+  clap() {
+    if (this.done || this.filled >= this.n) return;
+    this.filled++; this.layout(); audio.clapTone(this.filled - 1);
+    if (this.filled < this.n) return;
+    audio.cheer();
+    if (++this.round >= 2) { this.done = true; say('Three, then five. You can count!'); next(2); return; }
+    after(1.4, () => { this.n = 5; this.filled = 0; this.layout(); say('Now clap five times!'); });
+  },
+  tap() { if (!ear.live || pageT > 12) this.clap(); },
+  drawUnder() { (this.spots || []).forEach((s, i) => { if (i >= this.filled) ring(s.x, s.y, s.r, s.color, .55); }); }
+};
+const bubblePage = {
+  text: 'Blow at the arrows to make bubbles, then pop them all!', arrow: 40,
+  enter() { this.done = false; this.bubbles = []; this.popped = 0; this.debt = 0; this.puff = 0; arrange([]); },
+  layout() {},
+  tick(dt) {
+    const auto = !ear.live || pageT > 15 ? .3 : 0;
+    this.puff = this.done ? 0 : Math.max(ear.blow, ear.level * .6, keysHeld.KeyB ? .9 : 0, auto);
+    const m = micSpot(), inward = Math.atan2(-m.uy, -m.ux), A = area();
+    // Any blow at all makes a steady stream, since the iPad hears even a hard blow as quite soft.
+    for (this.debt += (this.puff > 0 ? .5 + this.puff : 0) * dt * 6; this.debt >= 1; this.debt--) {
+      if (this.bubbles.length >= 16) continue;
+      const a = inward + rand(-.6, .6), speed = U * rand(.35, .7), along = rand(-U * .12, U * .12);
+      this.bubbles.push({ x: m.x - m.uy * along - m.ux * U * .05, y: m.y + m.ux * along - m.uy * U * .05,
+        vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: 0, tr: U * rand(.035, .075), color: pick(COLORS), seed: rand(TAU), age: 0 });
+    }
+    for (const b of this.bubbles) {
+      b.age += dt; b.r += (b.tr - b.r) * Math.min(1, dt * 6);
+      b.vx += Math.sin(b.age * 1.4 + b.seed) * U * .08 * dt; b.vy += Math.cos(b.age * 1.1 + b.seed) * U * .08 * dt;
+      const f = Math.exp(-.7 * dt); b.vx *= f; b.vy *= f;
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      if (b.age > .8) { b.x = clamp(b.x, b.r, A.w - b.r); b.y = clamp(b.y, A.y + b.r, A.y + A.h - b.r); }
+    }
+  },
+  popAt(x, y) {
+    if (this.done) return;
+    const b = this.bubbles.find(o => hypot(o.x - x, o.y - y) < o.r + 24);
+    if (!b) return;
+    this.bubbles.splice(this.bubbles.indexOf(b), 1);
+    confetti(b.x, b.y, 6, .5);
+    audio.pop();
+    if (++this.popped >= 15) { this.done = true; audio.cheer(); say('Pop, pop, pop! You got them all!'); next(2); }
+  },
+  // Bubbles drift, so they pop the moment a finger lands rather than when it lifts.
+  press(x, y) { this.popAt(x, y); },
+  drag(x0, y0, x1, y1) { this.popAt(x1, y1); },
+  drawOver() {
+    ctx.save(); ctx.lineWidth = U * .004;
+    for (const b of this.bubbles) {
+      ctx.globalAlpha = .22; ctx.fillStyle = PAINT[b.color]; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
+      ctx.globalAlpha = .75; ctx.strokeStyle = '#17171A'; ctx.stroke();
+      ctx.globalAlpha = .9; ctx.strokeStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(b.x, b.y, b.r * .68, -2.5, -1.7); ctx.stroke();
+    }
+    ctx.restore();
+    if (!this.done && !this.puff && !this.bubbles.length) drawMicHint('#17171A', .7);
+  }
+};
+const pitchPage = {
+  text: 'Sing a high, squeaky "eeee" like a mouse to float the dot up into the circle!', arrow: 40, drag: true,
+  enter() { this.done = false; this.goal = 1; this.hold = 0; this.y = .5; this.center = 12 * Math.log2(300); ear.wantPitch = true; this.layout(); },
+  exit() { ear.wantPitch = false; },
+  layout() {
+    const A = area(); this.top = A.y + U * .14; this.bottom = A.y + A.h - U * .14; this.x = A.w / 2;
+    [this.d] = arrange([{ color: 'blue', x: this.x, y: this.at(this.y), r: U * .07 }]);
+  },
+  at(y) { return this.bottom + (this.top - this.bottom) * y; },
+  tick(dt) {
+    const d = this.d; if (this.done || !d) return;
+    let want = null;
+    if (ear.pitch) {
+      // The middle starts at a typical child's speaking voice and slowly learns this child's own.
+      const semis = 12 * Math.log2(ear.pitch), base = 12 * Math.log2(300);
+      this.center = clamp(this.center + (semis - this.center) * dt / 15, base - 7, base + 7);
+      want = clamp(.5 + (semis - this.center) / 10, 0, 1);
+    }
+    if (keysHeld.KeyH) want = 1;
+    if (keysHeld.KeyL) want = 0;
+    if (d.held) this.y = clamp((d.y - this.bottom) / (this.top - this.bottom), 0, 1);
+    else {
+      if (want !== null) { this.y += (want - this.y) * Math.min(1, dt * 4); d.wob = .1; }
+      d.hx = this.x; d.hy = this.at(this.y);
+    }
+    this.hold = Math.abs(this.y - this.goal) < .12 ? this.hold + dt : 0;
+    if (this.hold < .6) return;
+    this.hold = 0;
+    if (this.goal === 1) {
+      this.goal = 0; audio.tone(523.3, .2, .25); audio.tone(784, .3, .22, 'sine', .12);
+      say('Now a low, growly "ohhh" like a bear to sink it down!');
+    } else { this.done = true; audio.cheer(); say('Squeaky mouse, growly bear! Well done!'); next(2.2); }
+  },
+  drawUnder() { if (!this.done && this.d) ring(this.x, this.at(this.goal), U * .1, 'blue', .65 + .3 * Math.sin(pageT * 4), .12); }
+};
+const booPage = {
+  text: 'Somebody is peeking! When they all peek out, shout BOO!', arrow: 35,
+  enter() { this.done = false; this.scares = 0; this.peek = 0; this.hide = 0; this.seen = ear.boomAt; this.oWas = false; this.tapped = false; this.called = false; this.layout(); },
+  layout() {
+    const A = area(), r = U * .07;
+    this.spots = [];
+    for (const f of [.25, .5, .75]) this.spots.push({ x: 0, y: A.y + A.h * f, nx: 1, ny: 0 }, { x: A.w, y: A.y + A.h * f, nx: -1, ny: 0 });
+    for (const f of [.33, .67]) this.spots.push({ x: A.w * f, y: 0, nx: 0, ny: 1 });
+    this.ds = arrange(this.spots.map((s, i) => ({ color: COLORS[i % 3], ...this.place(s), r })));
+  },
+  // Hidden just past the edge of the page, or peeking in with most of the dot showing.
+  place(s) {
+    const r = U * .07, out = r * 1.3 - this.peek * r * 1.45;
+    return { x: s.x - s.nx * out, y: s.y - s.ny * out };
+  },
+  tick(dt) {
+    if (this.hide > 0) { this.hide -= dt; this.peek = 0; } else this.peek = Math.min(1, this.peek + dt / 2.5);
+    this.ds.forEach((d, i) => { const p = this.place(this.spots[i]); d.hx = p.x; d.hy = p.y; });
+    const key = !!keysHeld.KeyO, boo = ear.boomAt > this.seen || (key && !this.oWas) || this.tapped;
+    this.seen = ear.boomAt; this.oWas = key; this.tapped = false;
+    if (this.done) return;
+    if (this.peek >= 1 && !this.called) { this.called = true; say('Now! Shout BOO!'); }
+    if (!boo || this.peek < .6) return;
+    this.scares++; this.peek = 0; this.hide = 1.4; this.called = false;
+    for (const d of this.ds) { squish(d, 1.6); d.wob = .4; }
+    audio.tone(880, .12, .2, 'triangle'); audio.tone(660, .12, .18, 'triangle', .06);
+    if (this.scares >= 3) { this.done = true; this.hide = 99; say('Eek! You scared them silly!'); after(.8, () => audio.cheer()); next(2.6); }
+    else say(this.scares === 1 ? 'Eek! They hid! Wait for them to peek again...' : 'EEK! Here they come again...');
+  },
+  tap(d) { if (d && (!ear.live || pageT > 12)) this.tapped = true; },
+  drawOver() { if (!this.done && this.peek >= 1) drawMicHint('#17171A', .7); }
+};
+const bookTwo = [bookTwoStart, trailPage, roarPage, sleepyPage, feedPage, balloonPage, homePage, copyPage, stretchPage, countPage, bubblePage, pitchPage, booPage];
+
 const pages = [
   { text: '', cover: true, enter() { this.layout(); }, layout() {
       arrange([{ color: 'yellow', x: W / 2, y: H / 2, r: U * .1 }]);
@@ -916,7 +1386,8 @@ const pages = [
   mixPage('Slide the blue one onto the yellow one.', 'blue', 'yellow', 'Look! Green!'),
   mixPage('Now slide the red one onto the blue one.', 'red', 'blue', 'Purple! Who knew?'),
   mixPage('And the yellow one onto the red one.', 'yellow', 'red', 'Orange! You are a painter.'),
-  nightPage, singPage, clapPage, popPage, endPage, playPage
+  nightPage, singPage, clapPage, popPage, bookOneEnd, playPage,
+  ...bookTwo, bookTwoEnd
 ];
 
 function go(i) {
@@ -953,6 +1424,7 @@ canvas.addEventListener('pointerdown', e => {
   audio.init(); idleT = 0; reviveMic();
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* finger already lifted */ }
   const { x, y } = touchAt(e);
+  if (page.press) page.press(x, y);
   const d = hit(x, y);
   pointers.set(e.pointerId, { dot: d, x, y, x0: x, y0: y, t: performance.now(), moved: 0 });
   if (d) {
@@ -1019,7 +1491,8 @@ $('next').addEventListener('click', () => {
   if (page === playPage) go(0); else go((pageIndex + 1) % pages.length);
 });
 
-/* Keyboard stands in for the sensors on a computer: arrows tip, S wiggles, C claps, hold B to blow, hold V to sing. */
+/* Keyboard stands in for the sensors on a computer: arrows tip, S wiggles, C claps, hold B to blow, hold V to sing,
+   hold R to roar, O says boo, hold H or L to sing high or low, hold G or K to stretch or squeeze. */
 const keysHeld = {};
 window.addEventListener('keydown', e => {
   sense.keys[e.key] = true; keysHeld[e.code] = true;
@@ -1075,7 +1548,7 @@ requestAnimationFrame(frame);
 try {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 } catch (e) { /* offline play is a bonus; the game runs without it */ }
-window.boop = { ear, sense, audio, go, get page() { return page; }, get index() { return pageIndex; }, get dots() { return dots; }, get scraped() { return scraped; }, pages };
+window.boop = { ear, sense, audio, go, get page() { return page; }, get index() { return pageIndex; }, get dots() { return dots; }, get scraped() { return scraped; }, pages, bookTwo, pointers };
 </script>
 </body>
 </html>
